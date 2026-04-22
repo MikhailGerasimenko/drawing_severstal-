@@ -1,0 +1,11 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+.DS_Store
+output
+node_modules
+*.log
+.cursor
+.matplotlib-cache

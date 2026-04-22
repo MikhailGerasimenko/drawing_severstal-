@@ -1,0 +1,10 @@
+ezdxf
+openai
+python-docx
+python-dotenv
+matplotlib
+fastapi
+uvicorn
+python-multipart
+Pillow
+PyMuPDF

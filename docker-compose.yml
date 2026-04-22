@@ -1,0 +1,29 @@
+services:
+  dxf-passport:
+    build: .
+    image: dxf-passport:latest
+    container_name: dxf-passport
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    command:
+      - --help
+  dxf-passport-api:
+    build: .
+    image: dxf-passport:latest
+    container_name: dxf-passport-api
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    command:
+      - --serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"

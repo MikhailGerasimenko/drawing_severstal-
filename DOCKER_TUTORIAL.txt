@@ -1,0 +1,171 @@
+Полный туториал: запуск мультиформатного агента в Docker
+========================================================
+
+1) Что нужно установить
+-----------------------
+- Docker Desktop (Windows/macOS) или Docker Engine (Linux)
+- Проверка:
+  docker --version
+
+2) Структура проекта
+--------------------
+В проекте должны быть:
+- Dockerfile
+- docker-compose.yml
+- requirements.txt
+- main.py
+- папка src/
+- входные DXF-файлы
+
+3) Подготовка переменных окружения
+----------------------------------
+Если планируете генерацию паспорта через LLM, создайте/проверьте .env:
+
+Пример для OpenRouter:
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=ваш_ключ
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=qwen/qwen-2.5-72b-instruct
+OPENROUTER_SITE_URL=
+OPENROUTER_APP_NAME=dxf-passport-builder
+
+4) Сборка Docker-образа
+-----------------------
+Из корня проекта:
+docker build -t dxf-passport:latest .
+
+5) Базовый запуск: DXF -> normalized JSON + PNG
+-----------------------------------------------
+Пример для файла 22:
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  dxf-passport:latest \
+  --dxf "22 - нож (dxf).dxf" \
+  --out-dir output \
+  --name final_22
+
+Результат:
+- output/final_22.json
+- output/final_22.png
+
+6) PDF -> normalized JSON + PNG-preview
+---------------------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  dxf-passport:latest \
+  --pdf "drawing.pdf" \
+  --out-dir output \
+  --name drawing_pdf
+
+7) Изображение -> normalized JSON + PNG-preview
+-----------------------------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  dxf-passport:latest \
+  --image "drawing_scan.tiff" \
+  --out-dir output \
+  --name drawing_scan
+
+8) Генерация паспорта из DXF
+----------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  --env-file .env \
+  dxf-passport:latest \
+  --dxf "534 - Толкатель (dxf).dxf" \
+  --example-docx "Паспорт эталон 42-2-.docx" \
+  --out-dir output \
+  --name passport_534
+
+Результат:
+- output/passport_534.json
+- output/passport_534.png
+- output/passport_534.md
+- output/passport_534.docx
+- output/passport_534_report.json
+
+9) Генерация паспорта из готового JSON
+--------------------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  --env-file .env \
+  dxf-passport:latest \
+  --json-in "output/fc_534.json" \
+  --example-docx "Паспорт эталон 42-2-.docx" \
+  --out-dir output \
+  --name passport_from_json
+
+10) Рендер PNG из JSON для проверки
+-----------------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  dxf-passport:latest \
+  --render-json-png \
+  --json-in "output/final_22.json" \
+  --out-dir output \
+  --name final_22
+
+Результат:
+- output/final_22_from_json.png
+
+11) Проверка достоверности JSON
+-------------------------------
+docker run --rm \
+  -v "$(pwd):/app" \
+  -w /app \
+  dxf-passport:latest \
+  python3 validate_json_fidelity.py \
+  --dxf "22 - нож (dxf).dxf" \
+  --json "output/final_22.json" \
+  --out "output/final_22_fidelity_report.json"
+
+12) Запуск через docker compose
+-------------------------------
+Сборка:
+docker compose build
+
+Пример команды (DXF -> JSON + PNG):
+docker compose run --rm dxf-passport \
+  --dxf "22 - нож (dxf).dxf" \
+  --out-dir output \
+  --name final_22
+
+Пример команды (паспорт):
+docker compose run --rm dxf-passport \
+  --dxf "534 - Толкатель (dxf).dxf" \
+  --example-docx "Паспорт эталон 42-2-.docx" \
+  --out-dir output \
+  --name passport_534
+
+Запуск API:
+docker compose up dxf-passport-api
+
+Endpoints:
+- GET http://localhost:8000/health
+- POST http://localhost:8000/convert
+
+13) Частые проблемы
+-------------------
+1. Файл не найден:
+   - Проверьте имя файла и кавычки в аргументе --dxf/--example-docx.
+
+2. Нет доступа к LLM:
+   - Проверьте .env, ключи и сеть.
+   - Для корпоративных endpoint нужен доступ к сети/VPN.
+
+3. Пустой/слабый паспорт:
+   - Проверьте качество JSON (наличие текстов, атрибутов блоков, размеров).
+   - Используйте режим проверки PNG из JSON.
+
+14) Рекомендуемый сценарий для коллег
+-------------------------------------
+1) docker build -t dxf-passport:latest .
+2) docker run ... --dxf|--pdf|--image "<файл>" --out-dir output --name "<имя>"
+3) Проверить output/<имя>.json и output/<имя>.png
+4) при необходимости передать JSON/PNG в OCR/Vision/LLM пайплайн или n8n
