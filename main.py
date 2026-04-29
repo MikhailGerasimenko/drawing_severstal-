@@ -66,6 +66,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="DPI для PNG рендера (default: 300)",
     )
     parser.add_argument(
+        "--dxf-text-policy",
+        choices=["filling", "outline", "replace_rect", "replace_fill", "ignore"],
+        default="filling",
+        help="Режим рендера текста DXF в PNG (помогает при наложениях подписей)",
+    )
+    parser.add_argument(
+        "--dxf-lineweight-scaling",
+        type=float,
+        default=1.0,
+        help="Масштаб толщин линий для DXF->PNG (как в CAD-просмотре)",
+    )
+    parser.add_argument(
+        "--dxf-text-scale",
+        type=float,
+        default=1.0,
+        help="Масштаб размера текста DXF при рендере PNG (например 0.9)",
+    )
+    parser.add_argument(
+        "--dxf-letter-spacing",
+        type=float,
+        default=1.0,
+        help="Межсимвольная ширина текста DXF при рендере PNG (например 1.08)",
+    )
+    parser.add_argument(
+        "--dxf-render-backend",
+        choices=["classic", "librecad", "auto"],
+        default="classic",
+        help="Backend DXF->PNG: classic (ezdxf), librecad (DXF->PDF->PNG) или auto",
+    )
+    parser.add_argument(
         "--render-json-png",
         action="store_true",
         help="Рендерить PNG из JSON (для проверки корректности экспорта)",
@@ -110,6 +140,11 @@ def main() -> None:
         json_in=args.json_in,
         png_dpi=args.png_dpi,
         render_png=not args.skip_png or args.render_png,
+        dxf_text_policy=args.dxf_text_policy,
+        dxf_lineweight_scaling=args.dxf_lineweight_scaling,
+        dxf_text_scale=args.dxf_text_scale,
+        dxf_letter_spacing=args.dxf_letter_spacing,
+        dxf_render_backend=args.dxf_render_backend,
     )
     if args.json_in:
         print(f"Загружен: {args.json_in}")

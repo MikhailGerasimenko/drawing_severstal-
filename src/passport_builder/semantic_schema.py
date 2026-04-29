@@ -17,7 +17,14 @@ from .models import (
 
 DESIGNATION_RE = re.compile(r"\b\d{1,4}(?:-\d+){0,4}\b")
 MATERIAL_RE = re.compile(r"(сталь|бронза|латунь|алюминий|чугун|hrc|гост)", re.IGNORECASE)
-GDT_RE = re.compile(r"(биени|симметрич|допуск|⌅|∥|⟂|○|◎)", re.IGNORECASE)
+GDT_RE = re.compile(r"(биени|симметрич|допуск|⌅|∥|⟂|○|◎|\bT\s*0[,.]\d+|\b0[,.]\d+\s*[А-ЯA-Z]\b)", re.IGNORECASE)
+DXF_PREFIX_RE = re.compile(r"^(?:\.\d+(?:[,.]\d+)?;)+")
+STAMP_NOISE = {
+    "изм.", "лист", "листов", "№ докум.", "подп.", "дата", "лит.",
+    "разраб.", "пров.", "т.контр.", "н.контр.", "утв.", "зам.",
+    "масштаб", "формат", "копировал", "инв. № подл.", "инв. № дубл.",
+    "подп. и дата", "взам. инв. №", "справ. №", "перв. примен.",
+}
 
 
 def _sha256(path: Union[str, Path]) -> str:
@@ -42,20 +49,44 @@ def build_source_manifest(path: Union[str, Path], input_type: str) -> SourceMani
 
 
 def collect_text_evidence(summary: DxfSummary) -> list[str]:
+    def normalize_text(text: str) -> str:
+        value = DXF_PREFIX_RE.sub("", text).strip()
+        value = re.sub(r"\s+", " ", value).strip()
+        return value
+
+    def is_useful(text: str) -> bool:
+        lowered = text.lower().strip()
+        if not lowered:
+            return False
+        if lowered in STAMP_NOISE:
+            return False
+        if len(lowered) <= 1 and lowered not in {"a", "б", "в", "г", "l", "t"}:
+            return False
+        return True
+
     evidence: list[str] = []
-    evidence.extend(summary.extracted_texts)
+    for item in summary.extracted_texts:
+        cleaned = normalize_text(item)
+        if is_useful(cleaned):
+            evidence.append(cleaned)
 
     features = summary.feature_collection.get("features", [])
     for feature in features:
         props = feature.get("properties", {})
-        if props.get("ENTITIES") == "MTEXT" and props.get("LaNote"):
-            evidence.append(str(props["LaNote"]))
+        if props.get("ENTITIES") in {"MTEXT", "TEXT"}:
+            preferred = props.get("LaNotePlain") or props.get("LaNote")
+            if preferred:
+                cleaned = normalize_text(str(preferred))
+                if is_useful(cleaned):
+                    evidence.append(cleaned)
         if props.get("ENTITIES") == "INSERT":
             for key, value in props.items():
                 if key in {"ENTITIES", "LayerName", "Handle", "laCouleur", "Link", "leBloc"}:
                     continue
                 if value:
-                    evidence.append(f"{key}: {value}")
+                    pair = normalize_text(f"{key}: {value}")
+                    if is_useful(pair):
+                        evidence.append(pair)
     return [item for item in evidence if item]
 
 
@@ -81,9 +112,21 @@ def _pick_designation(summary: DxfSummary, text_evidence: list[str]) -> Semantic
 
 
 def _pick_material(text_evidence: list[str]) -> SemanticCandidate:
+    material_line = ""
+    hardness_line = ""
     for text in text_evidence:
         if MATERIAL_RE.search(text):
-            return SemanticCandidate(value=text, confidence="medium", evidence=[text])
+            if "hrc" in text.lower():
+                hardness_line = text
+            elif not material_line:
+                material_line = text
+    if material_line and hardness_line and material_line != hardness_line:
+        combined = f"{material_line} / {hardness_line}"
+        return SemanticCandidate(value=combined, confidence="high", evidence=[material_line, hardness_line])
+    if material_line:
+        return SemanticCandidate(value=material_line, confidence="medium", evidence=[material_line])
+    if hardness_line:
+        return SemanticCandidate(value=hardness_line, confidence="medium", evidence=[hardness_line])
     return SemanticCandidate(value="Не указано в чертеже", confidence="low", evidence=[])
 
 
@@ -94,13 +137,47 @@ def _pick_units(summary: DxfSummary) -> SemanticCandidate:
 
 
 def _pick_dimensions(summary: DxfSummary) -> SemanticCandidate:
-    if summary.dimensions:
-        value = ", ".join(str(d) for d in summary.dimensions[:20])
+    valid_dims = [float(d) for d in summary.dimensions if isinstance(d, (int, float)) and float(d) > 0]
+    if valid_dims:
+        value = ", ".join(str(d) for d in valid_dims[:20])
         return SemanticCandidate(value=value, confidence="medium", evidence=value.split(", ")[:5])
-    if summary.bounding_box:
-        bbox = summary.bounding_box
-        value = f"width={bbox['width']}, height={bbox['height']}"
-        return SemanticCandidate(value=value, confidence="low", evidence=["bounding_box"])
+
+    text_evidence = collect_text_evidence(summary)
+    dim_candidates: list[str] = []
+    seen: set[str] = set()
+    dim_patterns = [
+        r"[Ø∅]\s*\d+(?:[,.]\d+)?(?:[A-Za-zА-Яа-я0-9]+)?",
+        r"\b\d+(?:[,.]\d+)?\s*[xх×]\s*\d+(?:[,.]\d+)?\b",
+        r"\b\d+(?:[,.]\d+)?\s*(?:мм|mm)\b",
+        r"\bL-?\s*\d+(?:[,.]\d+)?\b",
+    ]
+    merged = re.compile("|".join(f"(?:{p})" for p in dim_patterns), re.IGNORECASE)
+    for text in text_evidence:
+        for match in merged.finditer(text):
+            candidate = re.sub(r"\s+", " ", match.group(0)).strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                dim_candidates.append(candidate)
+    if dim_candidates:
+        value = ", ".join(dim_candidates[:20])
+        return SemanticCandidate(value=value, confidence="medium", evidence=dim_candidates[:5])
+
+    # Special fallback for execution tables like: L-0,05 and rows 75 ... 78,5.
+    has_l = any(item.strip().lower() == "l" for item in text_evidence)
+    l_values: list[float] = []
+    for item in text_evidence:
+        token = item.strip().replace(",", ".")
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            value = float(token)
+            if 10 <= value <= 500:
+                l_values.append(value)
+    if has_l and l_values:
+        min_l = min(l_values)
+        max_l = max(l_values)
+        value = f"L: {min_l:g}...{max_l:g} мм (по исполнениям)"
+        return SemanticCandidate(value=value, confidence="medium", evidence=["L", f"{min_l:g}", f"{max_l:g}"])
+
+    # Avoid substituting drawing sheet bbox as part dimensions.
     return SemanticCandidate(value="Не указано в чертеже", confidence="low", evidence=[])
 
 
@@ -164,6 +241,12 @@ def normalize_dxf_summary(
             "extracted_texts": summary.extracted_texts,
             "geometry": summary.geometry,
             "feature_collection": summary.feature_collection,
+            "raw_entities": summary.raw_entities,
+            "raw_virtual_entities": summary.raw_virtual_entities,
+            "blocks": summary.blocks,
+            "dimension_entities": summary.dimension_entities,
+            "hatch_entities": summary.hatch_entities,
+            "conversion_coverage": summary.conversion_coverage,
         },
         ocr_blocks=[],
         vision_blocks=[],
@@ -206,5 +289,11 @@ def normalized_from_dict(payload: dict[str, Any], source_path_fallback: str = ""
         extracted_texts=payload.get("extracted_texts", []),
         geometry=payload.get("geometry", {}),
         feature_collection=payload.get("feature_collection", {}),
+        raw_entities=payload.get("raw_entities", []),
+        raw_virtual_entities=payload.get("raw_virtual_entities", []),
+        blocks=payload.get("blocks", []),
+        dimension_entities=payload.get("dimension_entities", []),
+        hatch_entities=payload.get("hatch_entities", []),
+        conversion_coverage=payload.get("conversion_coverage", {}),
     )
     return normalize_dxf_summary(summary, source_path_fallback or summary.file_name)

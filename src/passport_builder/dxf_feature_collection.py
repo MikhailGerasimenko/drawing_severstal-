@@ -1,150 +1,205 @@
 import math
-from pathlib import Path
-from typing import Any
+import re
+from typing import Any, Optional
+
+import ezdxf
 
 
-def _read_pairs(path: str) -> list[tuple[str, str]]:
-    lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
-    pairs: list[tuple[str, str]] = []
-    i = 0
-    while i + 1 < len(lines):
-        pairs.append((lines[i].strip(), lines[i + 1].rstrip("\n")))
-        i += 2
-    return pairs
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 
-def _entity_segments(pairs: list[tuple[str, str]]) -> list[tuple[str, list[tuple[str, str]]]]:
-    entities: list[tuple[str, list[tuple[str, str]]]] = []
-    in_entities = False
-    i = 0
-    while i < len(pairs):
-        code, value = pairs[i]
-        if code == "0" and value == "SECTION":
-            if i + 1 < len(pairs) and pairs[i + 1] == ("2", "ENTITIES"):
-                in_entities = True
-                i += 2
-                continue
-        if in_entities and code == "0" and value == "ENDSEC":
-            break
-        if not in_entities:
-            i += 1
-            continue
-        if code == "0":
-            etype = value
-            data: list[tuple[str, str]] = []
-            i += 1
-            while i < len(pairs) and pairs[i][0] != "0":
-                data.append(pairs[i])
-                i += 1
-            entities.append((etype, data))
-            continue
-        i += 1
-    return entities
-
-
-def _last(tags: list[tuple[str, str]], key: str, default: str = "") -> str:
-    for code, value in reversed(tags):
-        if code == key:
-            return value
-    return default
-
-
-def _all(tags: list[tuple[str, str]], key: str) -> list[str]:
-    return [v for c, v in tags if c == key]
-
-
-def _parse_color(tags: list[tuple[str, str]]) -> str:
-    color = _last(tags, "62", "BYLAYER")
-    return color
-
-
-def _extract_link(tags: list[tuple[str, str]]) -> str:
-    for i in range(len(tags) - 2):
-        if tags[i] == ("1001", "PE_URL") and tags[i + 1][0] == "1000":
-            return tags[i + 1][1]
-    return ""
-
-
-def _base_props(etype: str, tags: list[tuple[str, str]]) -> dict[str, Any]:
+def _base_props(entity: Any) -> dict[str, Any]:
     return {
-        "ENTITIES": etype,
-        "LayerName": _last(tags, "8", ""),
-        "Handle": _last(tags, "5", ""),
-        "laCouleur": _parse_color(tags),
-        "Link": _extract_link(tags),
+        "ENTITIES": entity.dxftype(),
+        "LayerName": str(getattr(entity.dxf, "layer", "")),
+        "Handle": str(getattr(entity.dxf, "handle", "")),
+        "laCouleur": str(getattr(entity.dxf, "color", "BYLAYER")),
+        "Link": "",
     }
 
 
-def _feature(etype: str, props: dict[str, Any], geometry: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "Feature", "properties": {"ENTITIES": etype, **props}, "geometry": geometry}
+def _extract_format_tokens(text: str) -> list[str]:
+    # Keep original formatting commands as explicit metadata.
+    return re.findall(r"\\[A-Za-z][^;]*;", text)
+
+
+def _to_plain_text(text: str) -> str:
+    plain = text.replace("\\P", "\n")
+    plain = re.sub(r"\{\\.*?;([^}]*)\}", r"\1", plain)
+    plain = re.sub(r"\\[A-Za-z0-9]+;?", "", plain)
+    return re.sub(r"\s+", " ", plain).strip()
+
+
+def _feature(props: dict[str, Any], geometry: Optional[dict[str, Any]]) -> dict[str, Any]:
+    return {"type": "Feature", "properties": props, "geometry": geometry}
+
+
+def _line_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    start = entity.dxf.start
+    end = entity.dxf.end
+    return _feature(
+        props,
+        {
+            "type": "LineString",
+            "coordinates": [[_safe_float(start[0]), _safe_float(start[1])], [_safe_float(end[0]), _safe_float(end[1])]],
+        },
+    )
+
+
+def _lwpolyline_feature(entity: Any, props: dict[str, Any]) -> Optional[dict[str, Any]]:
+    points = [[_safe_float(x), _safe_float(y)] for x, y, *_ in entity.get_points("xy")]
+    if len(points) < 2:
+        return None
+    if entity.closed:
+        return _feature(props, {"type": "Polygon", "coordinates": [points + [points[0]]]})
+    return _feature(props, {"type": "LineString", "coordinates": points})
+
+
+def _polyline_feature(entity: Any, props: dict[str, Any]) -> Optional[dict[str, Any]]:
+    points = [[_safe_float(v.x), _safe_float(v.y)] for v in entity.points()]
+    if len(points) < 2:
+        return None
+    if entity.is_closed:
+        return _feature(props, {"type": "Polygon", "coordinates": [points + [points[0]]]})
+    return _feature(props, {"type": "LineString", "coordinates": points})
+
+
+def _circle_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    center = entity.dxf.center
+    cx, cy = _safe_float(center[0]), _safe_float(center[1])
+    r = _safe_float(entity.dxf.radius)
+    coords = []
+    for deg in range(0, 360, 10):
+        angle = math.radians(deg)
+        coords.append([cx + math.cos(angle) * r, cy + math.sin(angle) * r])
+    coords.append(coords[0])
+    return _feature(props, {"type": "Polygon", "coordinates": [coords]})
+
+
+def _arc_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    center = entity.dxf.center
+    cx, cy = _safe_float(center[0]), _safe_float(center[1])
+    r = _safe_float(entity.dxf.radius)
+    start = _safe_float(entity.dxf.start_angle)
+    end = _safe_float(entity.dxf.end_angle)
+    if end < start:
+        end += 360.0
+    step = 10.0
+    coords = []
+    angle = start
+    while angle <= end:
+        rad = math.radians(angle)
+        coords.append([cx + math.cos(rad) * r, cy + math.sin(rad) * r])
+        angle += step
+    if not coords:
+        coords = [[cx, cy]]
+    return _feature(props, {"type": "LineString", "coordinates": coords})
+
+
+def _flattening_feature(entity: Any, props: dict[str, Any]) -> Optional[dict[str, Any]]:
+    try:
+        points = [[_safe_float(v.x), _safe_float(v.y)] for v in entity.flattening(distance=0.5)]
+    except Exception:
+        return None
+    if len(points) < 2:
+        return None
+    return _feature(props, {"type": "LineString", "coordinates": points})
+
+
+def _text_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    insert = entity.dxf.insert
+    raw_text = str(getattr(entity.dxf, "text", ""))
+    props["LaNote"] = raw_text
+    props["LaNoteRaw"] = raw_text
+    props["LaNotePlain"] = _to_plain_text(raw_text)
+    props["LaNoteFormatTokens"] = _extract_format_tokens(raw_text)
+    return _feature(
+        props,
+        {"type": "Point", "coordinates": [_safe_float(insert[0]), _safe_float(insert[1])]},
+    )
+
+
+def _mtext_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    insert = entity.dxf.insert
+    raw_text = str(getattr(entity, "text", ""))
+    props["LaNote"] = raw_text.replace("\\P", " ")
+    props["LaNoteRaw"] = raw_text
+    props["LaNotePlain"] = _to_plain_text(raw_text)
+    props["LaNoteFormatTokens"] = _extract_format_tokens(raw_text)
+    return _feature(
+        props,
+        {"type": "Point", "coordinates": [_safe_float(insert[0]), _safe_float(insert[1])]},
+    )
+
+
+def _point_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    location = entity.dxf.location
+    return _feature(
+        props,
+        {"type": "Point", "coordinates": [_safe_float(location[0]), _safe_float(location[1])]},
+    )
+
+
+def _insert_feature(entity: Any, props: dict[str, Any]) -> dict[str, Any]:
+    insert = entity.dxf.insert
+    props["leBloc"] = str(getattr(entity.dxf, "name", ""))
+    for attrib in getattr(entity, "attribs", []):
+        key = str(getattr(attrib.dxf, "tag", "")).strip()
+        value = str(getattr(attrib.dxf, "text", "")).strip()
+        if key:
+            props[key] = value
+    return _feature(
+        props,
+        {"type": "Point", "coordinates": [_safe_float(insert[0]), _safe_float(insert[1])]},
+    )
+
+
+def _entity_to_feature(entity: Any) -> Optional[dict[str, Any]]:
+    props = _base_props(entity)
+    entity_type = entity.dxftype()
+    if entity_type == "LINE":
+        return _line_feature(entity, props)
+    if entity_type == "LWPOLYLINE":
+        return _lwpolyline_feature(entity, props)
+    if entity_type == "POLYLINE":
+        return _polyline_feature(entity, props)
+    if entity_type == "CIRCLE":
+        return _circle_feature(entity, props)
+    if entity_type == "ARC":
+        return _arc_feature(entity, props)
+    if entity_type in {"ELLIPSE", "SPLINE"}:
+        return _flattening_feature(entity, props)
+    if entity_type == "TEXT":
+        return _text_feature(entity, props)
+    if entity_type == "MTEXT":
+        return _mtext_feature(entity, props)
+    if entity_type == "POINT":
+        return _point_feature(entity, props)
+    if entity_type == "INSERT":
+        return _insert_feature(entity, props)
+    return None
 
 
 def convert_dxf_to_feature_collection(dxf_path: str) -> dict[str, Any]:
-    pairs = _read_pairs(dxf_path)
-    entities = _entity_segments(pairs)
+    doc = ezdxf.readfile(dxf_path)
+    msp = doc.modelspace()
     features: list[dict[str, Any]] = []
 
-    i = 0
-    while i < len(entities):
-        etype, tags = entities[i]
-        props = _base_props(etype, tags)
-
-        if etype == "LWPOLYLINE":
-            xs = _all(tags, "10")
-            ys = _all(tags, "20")
-            points = [[float(x), float(y)] for x, y in zip(xs, ys)]
-            closed = int(_last(tags, "70", "0") or "0") & 1 == 1
-            if len(points) >= 2:
-                if closed:
-                    coords = points + [points[0]]
-                    features.append(_feature(etype, props, {"type": "Polygon", "coordinates": [coords]}))
-                else:
-                    features.append(_feature(etype, props, {"type": "LineString", "coordinates": points}))
-
-        elif etype == "LINE":
-            x1, y1 = _last(tags, "10", "0"), _last(tags, "20", "0")
-            x2, y2 = _last(tags, "11", "0"), _last(tags, "21", "0")
-            coords = [[float(x1), float(y1)], [float(x2), float(y2)]]
-            features.append(_feature(etype, props, {"type": "LineString", "coordinates": coords}))
-
-        elif etype == "CIRCLE":
-            cx, cy = float(_last(tags, "10", "0")), float(_last(tags, "20", "0"))
-            r = float(_last(tags, "40", "0"))
-            coords = []
-            for deg in range(0, 360, 10):
-                a = math.radians(deg)
-                coords.append([cx + math.cos(a) * r, cy + math.sin(a) * r])
-            if coords:
-                coords.append(coords[0])
-                features.append(_feature(etype, props, {"type": "Polygon", "coordinates": [coords]}))
-
-        elif etype == "MTEXT":
-            x, y = float(_last(tags, "10", "0")), float(_last(tags, "20", "0"))
-            line1 = _last(tags, "1", "")
-            chunks = _all(tags, "3")
-            text = (line1 + "".join(chunks)).replace("\\P", " ")
-            props["LaNote"] = text
-            features.append(_feature(etype, props, {"type": "Point", "coordinates": [x, y]}))
-
-        elif etype == "POINT":
-            x, y = float(_last(tags, "10", "0")), float(_last(tags, "20", "0"))
-            features.append(_feature(etype, props, {"type": "Point", "coordinates": [x, y]}))
-
-        elif etype == "INSERT":
-            x, y = float(_last(tags, "10", "0")), float(_last(tags, "20", "0"))
-            props["leBloc"] = _last(tags, "2", "")
-            j = i + 1
-            while j < len(entities) and entities[j][0] == "ATTRIB":
-                _, atags = entities[j]
-                key = _last(atags, "2", "")
-                value = _last(atags, "1", "")
-                if key:
-                    props[key] = value
-                j += 1
-            features.append(_feature(etype, props, {"type": "Point", "coordinates": [x, y]}))
-            i = j
-            continue
-
-        i += 1
+    for entity in msp:
+        feature = _entity_to_feature(entity)
+        if feature is not None:
+            features.append(feature)
+        if entity.dxftype() == "INSERT":
+            try:
+                for virtual in entity.virtual_entities():
+                    v_feature = _entity_to_feature(virtual)
+                    if v_feature is not None:
+                        features.append(v_feature)
+            except Exception:
+                pass
 
     return {"type": "FeatureCollection", "name": "DXF2JSON", "features": features}

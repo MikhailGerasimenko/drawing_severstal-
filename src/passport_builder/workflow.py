@@ -28,6 +28,11 @@ def process_input_asset(
     json_in: Optional[str] = None,
     png_dpi: int = 300,
     render_png: bool = True,
+    dxf_text_policy: str = "filling",
+    dxf_lineweight_scaling: float = 1.0,
+    dxf_text_scale: float = 1.0,
+    dxf_letter_spacing: float = 1.0,
+    dxf_render_backend: str = "classic",
 ) -> tuple[NormalizedDrawing, Path, Optional[Path]]:
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -43,7 +48,16 @@ def process_input_asset(
     )
 
     if dxf_path and render_png:
-        render_dxf_to_png(dxf_path, str(preview_path), dpi=png_dpi)
+        render_dxf_to_png(
+            dxf_path,
+            str(preview_path),
+            dpi=png_dpi,
+            text_policy=dxf_text_policy,
+            lineweight_scaling=dxf_lineweight_scaling,
+            text_scale=dxf_text_scale,
+            letter_spacing=dxf_letter_spacing,
+            backend=dxf_render_backend,
+        )
     elif json_in:
         preview_path = Path(normalized.preview.path) if normalized.preview and normalized.preview.path else None
     elif not render_png:

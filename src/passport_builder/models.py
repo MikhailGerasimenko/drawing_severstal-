@@ -73,6 +73,12 @@ class DxfSummary:
     extracted_texts: list[str]
     geometry: dict[str, Any] = field(default_factory=dict)
     feature_collection: dict[str, Any] = field(default_factory=dict)
+    raw_entities: list[dict[str, Any]] = field(default_factory=list)
+    raw_virtual_entities: list[dict[str, Any]] = field(default_factory=list)
+    blocks: list[dict[str, Any]] = field(default_factory=list)
+    dimension_entities: list[dict[str, Any]] = field(default_factory=list)
+    hatch_entities: list[dict[str, Any]] = field(default_factory=list)
+    conversion_coverage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
