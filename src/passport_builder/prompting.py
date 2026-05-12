@@ -4,6 +4,10 @@ from .models import NormalizedDrawing
 SYSTEM_PROMPT = """Ты инженер-конструктор и технический писатель.
 Сформируй паспорт изделия по нормализованным данным чертежа.
 Не выдумывай критичные параметры: если данных нет, помечай "Не указано в чертеже".
+Сначала используй semantic_candidates.engineering_features и validation_gate, затем explicit_dimensions, и только потом сырую геометрию.
+Никогда не меняй тип классифицированного размера: pitch_diameter не является central_hole, keyway не является отверстием.
+Если semantic_candidates.extraction_audit.critical_unclassified не пустой, не скрывай эти размеры: включи их как "требует проверки" или не используй без подтверждения.
+Геометрические диаметры из inferred_geometry считаются слабой подсказкой и не дают права добавлять посадки/допуски.
 Соблюдай структуру и нумерацию разделов:
 1. ОБЩИЕ ДАННЫЕ
 2. ГЕОМЕТРИЯ (ЧИСТОВАЯ)
@@ -18,6 +22,9 @@ def build_user_prompt(normalized: NormalizedDrawing, reference_passport_text: st
     source = normalized.source
     drawing_facts = normalized.drawing_facts
     semantic = normalized.semantic_candidates
+    engineering_features = semantic.get("engineering_features", {})
+    extraction_audit = semantic.get("extraction_audit", {})
+    validation_gate = semantic.get("validation_gate", {})
     return f"""Ниже сводка извлеченных данных из чертежа:
 
 Тип входа: {source.input_type}
@@ -41,6 +48,15 @@ MIME: {source.mime_type}
 Семантические кандидаты:
 {semantic}
 
+Инженерные признаки (используй в первую очередь):
+{engineering_features}
+
+Аудит извлечения:
+{extraction_audit}
+
+Validation gate:
+{validation_gate}
+
 Evidence:
 {normalized.evidence}
 
@@ -51,4 +67,6 @@ Evidence:
 - Пиши кратко, техническим языком.
 - Если значение отсутствует в чертеже, явно укажи "Не указано в чертеже".
 - Не добавляй вымышленные ГОСТ/допуски/материалы.
+- Не превращай делительный диаметр группы отверстий в центральное отверстие.
+- Не пропускай critical_unclassified: если они не вошли в разделы, добавь предупреждение "требует проверки по чертежу".
 """

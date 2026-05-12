@@ -56,6 +56,9 @@ class SemanticPassportJson:
     geometry_facts: list[str] = field(default_factory=list)
     gdt_facts: list[str] = field(default_factory=list)
     notes_facts: list[str] = field(default_factory=list)
+    engineering_features: dict[str, Any] = field(default_factory=dict)
+    extraction_audit: dict[str, Any] = field(default_factory=dict)
+    validation_gate: dict[str, Any] = field(default_factory=dict)
     missing_fields: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
 

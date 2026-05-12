@@ -65,13 +65,21 @@ def _entity_raw(entity: Any, *, source: str) -> dict[str, Any]:
         attribs = entity.dxfattribs()
     except Exception:
         attribs = {}
-    return {
+    detail = {
         "source": source,
         "type": entity.dxftype(),
         "handle": str(getattr(entity.dxf, "handle", "")),
         "layer": str(getattr(entity.dxf, "layer", "")),
         "dxfattribs": _json_safe(attribs),
     }
+    if entity.dxftype() in {"TEXT", "MTEXT", "ATTRIB"}:
+        raw_text = getattr(entity.dxf, "text", None)
+        if entity.dxftype() == "MTEXT":
+            raw_text = getattr(entity, "text", raw_text)
+        if raw_text:
+            detail["text"] = _clean_dxf_text(str(raw_text))
+            detail["raw_text"] = str(raw_text)
+    return detail
 
 
 def _dimension_detail(entity: Any, *, source: str) -> dict[str, Any]:
