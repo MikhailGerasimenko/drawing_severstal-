@@ -10,7 +10,7 @@ from .models import (
     NormalizedDrawing,
     PreviewArtifact,
     SemanticCandidate,
-    SemanticPassportJson,
+    DrawingSemantics,
     SourceManifest,
 )
 
@@ -631,7 +631,7 @@ def _build_engineering_features(
 
 
 def _build_validation_gate(
-    semantic: SemanticPassportJson,
+    semantic: DrawingSemantics,
     engineering_features: dict[str, Any],
     critical_unclassified: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -667,7 +667,7 @@ def _build_validation_gate(
     }
 
 
-def build_semantic_passport_json(summary: DxfSummary) -> SemanticPassportJson:
+def build_semantic_passport_json(summary: DxfSummary) -> DrawingSemantics:
     text_evidence = collect_text_evidence(summary)
     geometry_facts = [f"{key}: {count}" for key, count in summary.entity_counts.items()]
     gdt_facts = [text for text in text_evidence if GDT_RE.search(text)]
@@ -678,7 +678,7 @@ def build_semantic_passport_json(summary: DxfSummary) -> SemanticPassportJson:
         gdt_facts,
     )
 
-    semantic = SemanticPassportJson(
+    semantic = DrawingSemantics(
         product_name=_pick_name(summary, text_evidence),
         designation=_pick_designation(summary, text_evidence),
         units=_pick_units(summary),
@@ -747,15 +747,12 @@ def normalize_dxf_summary(
             "hatch_entities": summary.hatch_entities,
             "conversion_coverage": summary.conversion_coverage,
         },
-        ocr_blocks=[],
-        vision_blocks=[],
         semantic_candidates=asdict(semantic),
         evidence=_semantic_evidence(semantic),
-        legacy_summary=asdict(summary),
     )
 
 
-def _semantic_evidence(semantic: SemanticPassportJson) -> dict[str, Any]:
+def _semantic_evidence(semantic: DrawingSemantics) -> dict[str, Any]:
     return {
         "product_name": semantic.product_name.evidence,
         "designation": semantic.designation.evidence,
@@ -815,11 +812,8 @@ def normalized_from_dict(payload: dict[str, Any], source_path_fallback: str = ""
             source=SourceManifest(**source),
             preview=PreviewArtifact(**preview) if preview else None,
             drawing_facts=payload.get("drawing_facts", {}),
-            ocr_blocks=payload.get("ocr_blocks", []),
-            vision_blocks=payload.get("vision_blocks", []),
             semantic_candidates=semantic_candidates,
             evidence=evidence,
-            legacy_summary=payload.get("legacy_summary", {}),
         )
 
     summary = DxfSummary(

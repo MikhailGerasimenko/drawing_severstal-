@@ -1,214 +1,86 @@
-# Мультиформатный агент чертежей
+# DXF Converter
 
-Проект принимает чертежи в форматах `DXF`, `PDF`, `PNG/JPG/TIFF` и формирует единый `normalized_drawing_json`.  
-Для `DXF` дополнительно сохраняется превью `PNG`, а для `PDF/изображений` строится контейнер под OCR/Vision.  
-Опционально может дополнительно формировать паспорт изделия в `Markdown` и `DOCX`.
+Микросервис и CLI для конвертации инженерных чертежей **DXF** в три артефакта:
 
-## 1) Установка
+1. **PNG** — визуальное превью чертежа  
+2. **JSON** — нормализованные факты чертежа (размеры, семантика, audit)  
+3. **Markdown** — компактный **LLM Engineering Context** для n8n / Gemini / Qwen  
+
+```
+DXF ──► [Converter] ──►  drawing.png
+                      ├── drawing.json
+                      └── drawing_llm_context.md
+```
+
+## Быстрый старт (CLI)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+python main.py \
+  --dxf "samples/42-2 - Штифтодержатель.dxf" \
+  --name "42-2" \
+  --out-dir output
 ```
 
-## 2) Настройка API
+Результат в `output/`:
+
+- `42-2.png`
+- `42-2.json`
+- `42-2_llm_context.md`
+
+## HTTP API (микросервис)
 
 ```bash
-cp .env.example .env
+python main.py --serve --host 0.0.0.0 --port 8000
 ```
 
-Заполни в `.env`:
-- `QWEN_API_KEY`
-- при необходимости `QWEN_BASE_URL`
-- модель `QWEN_MODEL`
+- Swagger UI: http://localhost:8000/docs  
+- ReDoc: http://localhost:8000/redoc  
+- Описание эндпоинтов для коллег: **[API.md](./API.md)**
 
-### Вариант A: Qwen (как раньше)
-
-```env
-LLM_PROVIDER=qwen
-QWEN_API_KEY=...
-QWEN_BASE_URL=...
-QWEN_MODEL=qwen-plus
-```
-
-### Вариант B: OpenRouter
-
-```env
-LLM_PROVIDER=openrouter
-OPENROUTER_API_KEY=...
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_MODEL=qwen/qwen-2.5-72b-instruct
-OPENROUTER_SITE_URL=
-OPENROUTER_APP_NAME=dxf-passport-builder
-```
-
-`OPENROUTER_MODEL` можешь заменить на любую доступную у тебя модель OpenRouter.
-
-## 3) Базовый запуск
-
-### DXF -> normalized JSON + PNG
+### Docker
 
 ```bash
-python3 main.py \
-  --dxf "534 - Толкатель (dxf).dxf" \
-  --out-dir output \
-  --name "drawing_534"
+docker compose up --build
 ```
 
-Результат:
-- `output/drawing_534.json`
-- `output/drawing_534.png`
+Сервис слушает порт **8000**, артефакты сохраняются в volume `converter-artifacts`.
 
-### PDF -> normalized JSON + PNG-preview
+## Структура проекта
 
-```bash
-python3 main.py \
-  --pdf "drawing.pdf" \
-  --out-dir output \
-  --name "drawing_pdf"
+```
+├── main.py                 # CLI и точка входа API
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── API.md                  # Документация REST для коллег
+├── samples/                # Примеры DXF
+├── output/                 # Результаты CLI (gitignore, не коммитить)
+└── src/dxf_converter/
+    ├── api.py              # FastAPI микросервис
+    ├── workflow.py         # Оркестрация конвертации
+    ├── dxf_parser.py       # Парсинг DXF → summary
+    ├── semantic_schema.py  # Summary → normalized JSON + классификация
+    ├── markdown_context.py # JSON → LLM Markdown
+    └── rendering.py        # DXF → PNG (ezdxf / LibreCAD)
 ```
 
-### Изображение -> normalized JSON + PNG-preview
+## Параметры рендера PNG
 
-```bash
-python3 main.py \
-  --image "drawing_scan.tiff" \
-  --out-dir output \
-  --name "drawing_scan"
-```
+| Параметр | По умолчанию | Описание |
+|----------|--------------|----------|
+| `--png-dpi` | 300 | Разрешение превью |
+| `--dxf-text-policy` | filling | Режим отрисовки текста |
+| `--dxf-render-backend` | classic | `classic` (ezdxf), `librecad`, `auto` |
+| `--skip-png` | — | Только JSON + Markdown |
 
-## 4) Запуск генерации паспорта (опционально)
+## Интеграция с n8n
 
-```bash
-python3 main.py \
-  --dxf "534 - Толкатель (dxf).dxf" \
-  --example-docx "Паспорт эталон 42-2-.docx" \
-  --out-dir output \
-  --name "passport_534"
-```
+1. `POST /v1/convert` — загрузить DXF, получить `download_urls.llm_context_md`  
+2. Скачать Markdown или передать URL в LLM-ноду  
+3. Использовать промпт «паспорт изделия» поверх `*_llm_context.md`  
 
-Результат:
-- `output/passport_534.json` (normalized drawing json)
-- `output/passport_534.png`
-- `output/passport_534.md`
-- `output/passport_534.docx`
-- `output/passport_534_report.json`
-
-### Генерация паспорта из готового JSON
-
-```bash
-python3 main.py \
-  --json-in "output/drawing_534.json" \
-  --example-docx "Паспорт эталон 42-2-.docx" \
-  --out-dir output \
-  --name "passport_from_json"
-```
-
-## 5) Строгий режим проверки
-
-Если нужен контроль обязательных полей перед выпуском `docx`, используй `--strict`:
-
-```bash
-python3 main.py \
-  --dxf "534 - Толкатель (dxf).dxf" \
-  --example-docx "Паспорт эталон 42-2-.docx" \
-  --out-dir output \
-  --name "passport_534_strict" \
-  --strict
-```
-
-Что делает строгий режим:
-- Всегда сохраняет `md` и `report.json`.
-- Проверяет обязательные поля: `тип`, `обозначение`, `габариты`, `материал/твердость`, `основные размеры`, `ГДТ`.
-- Если чего-то не хватает, `docx` не создается и в консоль выводится список проблемных полей.
-
-## 6) Проверка: PNG из JSON
-
-Чтобы проверить, насколько normalized JSON близок к исходному чертежу, можно отрендерить PNG прямо из JSON:
-
-```bash
-python3 main.py \
-  --render-json-png \
-  --json-in "output/drawing_534.json" \
-  --out-dir output \
-  --name "drawing_534_check"
-```
-
-Результат: `output/drawing_534_check_from_json.png`
-
-## 7) Проверка достоверности JSON
-
-```bash
-python3 validate_json_fidelity.py \
-  --dxf "22 - нож (dxf).dxf" \
-  --json "output/final_22.json" \
-  --out "output/final_22_fidelity_report.json"
-```
-
-Скрипт сравнивает DXF и JSON по:
-- единицам,
-- bbox,
-- типам сущностей,
-- длинам массивов,
-- контрольным fingerprint для геометрии, текстов и feature collection.
-
-## 8) Настройки PNG рендера
-
-Быстрый рендер только изображения чертежа:
-
-```bash
-python3 main.py \
-  --dxf "22 - нож (dxf).dxf" \
-  --out-dir output \
-  --name "drawing_22" \
-  --render-png
-```
-
-Результат: `output/drawing_22.png`
-
-Можно явно указать файл и DPI:
-
-```bash
-python3 main.py \
-  --dxf "22 - нож (dxf).dxf" \
-  --render-png \
-  --png-out "output/knife_preview.png" \
-  --png-dpi 400
-```
-
-Отключить PNG совсем:
-
-```bash
-python3 main.py \
-  --dxf "22 - нож (dxf).dxf" \
-  --out-dir output \
-  --name "only_json" \
-  --skip-png
-```
-
-## 9) Серверный режим
-
-Запуск API:
-
-```bash
-python3 main.py \
-  --serve \
-  --host 0.0.0.0 \
-  --port 8000
-```
-
-Доступные endpoints:
-- `GET /health`
-- `POST /convert`
-
-## Как работает
-
-1. `InputRouter` определяет тип входа (`dxf/pdf/image/json`).
-2. Для DXF формируется полный `normalized_drawing_json`.
-3. Для PDF/изображений создается preview и контейнер под OCR/Vision.
-4. При наличии `--example-docx` строится паспорт по нормализованным данным.
-
-## Если API ключ не задан
-
-Скрипт все равно отработает и создаст fallback-версию паспорта (с пометками о недостающих данных).
+Подробные примеры `curl` — в [API.md](./API.md).

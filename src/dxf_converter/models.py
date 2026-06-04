@@ -22,24 +22,6 @@ class PreviewArtifact:
 
 
 @dataclass
-class OcrBlock:
-    text: str
-    raw_text: str
-    bbox: list[float] = field(default_factory=list)
-    confidence: float = 0.0
-    page: int = 1
-
-
-@dataclass
-class VisionBlock:
-    block_type: str
-    label: str
-    bbox: list[float] = field(default_factory=list)
-    confidence: float = 0.0
-    page: int = 1
-
-
-@dataclass
 class SemanticCandidate:
     value: str
     confidence: str
@@ -47,7 +29,7 @@ class SemanticCandidate:
 
 
 @dataclass
-class SemanticPassportJson:
+class DrawingSemantics:
     product_name: SemanticCandidate
     designation: SemanticCandidate
     units: SemanticCandidate
@@ -89,22 +71,6 @@ class NormalizedDrawing:
     source: SourceManifest
     preview: Optional[PreviewArtifact]
     drawing_facts: dict[str, Any] = field(default_factory=dict)
-    ocr_blocks: list[OcrBlock] = field(default_factory=list)
-    vision_blocks: list[VisionBlock] = field(default_factory=list)
     semantic_candidates: dict[str, Any] = field(default_factory=dict)
-    evidence: dict[str, list[str]] = field(default_factory=dict)
-    legacy_summary: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
-
-@dataclass
-class PassportSection:
-    title: str
-    content: str
-
-
-@dataclass
-class PassportData:
-    product_name: str
-    designation: str
-    sections: list[PassportSection] = field(default_factory=list)
-    source: dict[str, Any] = field(default_factory=dict)

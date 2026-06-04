@@ -1,29 +1,21 @@
 services:
-  dxf-passport:
+  dxf-converter:
     build: .
-    image: dxf-passport:latest
-    container_name: dxf-passport
-    working_dir: /app
-    env_file:
-      - .env
-    volumes:
-      - ./:/app
-    command:
-      - --help
-  dxf-passport-api:
-    build: .
-    image: dxf-passport:latest
-    container_name: dxf-passport-api
-    working_dir: /app
-    env_file:
-      - .env
-    volumes:
-      - ./:/app
+    image: dxf-converter:latest
+    container_name: dxf-converter
     ports:
       - "8000:8000"
-    command:
-      - --serve
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
+    environment:
+      ARTIFACTS_DIR: /app/data/artifacts
+      CORS_ORIGINS: "*"
+    volumes:
+      - converter-artifacts:/app/data/artifacts
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  converter-artifacts:

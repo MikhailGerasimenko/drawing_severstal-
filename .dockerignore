@@ -5,6 +5,9 @@ __pycache__
 *.pyc
 .DS_Store
 output
+data
+samples
+*.dxf
 node_modules
 *.log
 .cursor

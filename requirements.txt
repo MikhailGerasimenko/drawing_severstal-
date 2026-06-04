@@ -1,10 +1,5 @@
 ezdxf
-openai
-python-docx
-python-dotenv
 matplotlib
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
-Pillow
-PyMuPDF
