@@ -39,7 +39,7 @@ python main.py --serve --host 0.0.0.0 --port 8000
 
 - Swagger UI: http://localhost:8000/docs  
 - ReDoc: http://localhost:8000/redoc  
-- Описание эндпоинтов для коллег: **[API.md](./API.md)**
+- Документация для коллег: **[API.md](./API.md)** — эндпоинты, ветки **PNG** и **LLM Markdown**, сценарии n8n
 
 ### Docker
 
