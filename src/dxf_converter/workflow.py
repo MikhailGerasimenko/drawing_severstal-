@@ -18,7 +18,8 @@ class ConvertArtifacts:
     normalized: NormalizedDrawing
     json_path: Path
     png_path: Optional[Path]
-    llm_markdown_path: Path
+    llm_markdown_text: str
+    llm_markdown_path: Optional[Path] = None
 
 
 def _slugify_name(value: str) -> str:
@@ -50,8 +51,9 @@ def convert_dxf(
     dxf_text_scale: float = 1.0,
     dxf_letter_spacing: float = 1.0,
     dxf_render_backend: RenderBackend = "classic",
+    save_llm_markdown_file: bool = False,
 ) -> ConvertArtifacts:
-    """DXF → normalized JSON + PNG preview + компактный LLM Markdown."""
+    """DXF → normalized JSON + PNG preview + компактный LLM Markdown (текст)."""
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
@@ -80,11 +82,15 @@ def convert_dxf(
         normalized.preview.path = ""
 
     save_normalized_json(normalized, json_path)
-    save_llm_markdown_context(normalized, llm_path)
+    llm_markdown_text = render_llm_markdown_context(normalized)
+    llm_markdown_path = None
+    if save_llm_markdown_file:
+        llm_markdown_path = save_llm_markdown_context(normalized, llm_path)
 
     return ConvertArtifacts(
         normalized=normalized,
         json_path=json_path,
         png_path=png_path if render_png else None,
-        llm_markdown_path=llm_path,
+        llm_markdown_text=llm_markdown_text,
+        llm_markdown_path=llm_markdown_path,
     )

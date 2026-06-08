@@ -7,9 +7,9 @@
 3. **Markdown** — компактный **LLM Engineering Context** для n8n / Gemini / Qwen  
 
 ```
-DXF ──► [Converter] ──►  drawing.png
-                      ├── drawing.json
-                      └── drawing_llm_context.md
+DXF ──► [Converter] ──►  drawing.png      (файл)
+                      ├── drawing.json    (файл)
+                      └── llm_context     (текст в ответе API / stdout в CLI)
 ```
 
 ## Быстрый старт (CLI)
@@ -25,11 +25,12 @@ python main.py \
   --out-dir output
 ```
 
-Результат в `output/`:
+Результат:
 
-- `42-2.png`
-- `42-2.json`
-- `42-2_llm_context.md`
+- `output/42-2.png`, `output/42-2.json` — файлы
+- **LLM Markdown** — текст в **stdout** (пути JSON/PNG — в stderr)
+
+Сохранить Markdown в файл: `--llm-out output/42-2_llm_context.md`
 
 ## HTTP API (микросервис)
 

@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["classic", "librecad", "auto"],
         default="classic",
     )
+    parser.add_argument(
+        "--llm-out",
+        default=None,
+        help="Сохранить LLM Markdown в файл (по умолчанию выводится в stdout)",
+    )
     parser.add_argument("--serve", action="store_true", help="Запустить HTTP API")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
@@ -62,10 +67,15 @@ def main() -> None:
         dxf_render_backend=args.dxf_render_backend,
     )
 
-    print(f"JSON:     {result.json_path}")
-    print(f"Markdown: {result.llm_markdown_path}")
+    if args.llm_out:
+        Path(args.llm_out).write_text(result.llm_markdown_text, encoding="utf-8")
+        print(f"LLM Markdown saved: {args.llm_out}", file=sys.stderr)
+
+    print(result.llm_markdown_text)
+
+    print(f"JSON: {result.json_path}", file=sys.stderr)
     if result.png_path:
-        print(f"PNG:      {result.png_path}")
+        print(f"PNG:  {result.png_path}", file=sys.stderr)
 
 
 if __name__ == "__main__":

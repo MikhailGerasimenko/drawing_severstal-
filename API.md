@@ -34,7 +34,7 @@ flowchart TD
 | Ветка | Артефакт | Когда создаётся | Для кого |
 |-------|----------|-----------------|----------|
 | **JSON** | `{name}.json` | **Всегда** | Аудит, интеграции, полные факты чертежа |
-| **LLM Markdown** | `{name}_llm_context.md` | **Всегда** | n8n / Gemini / Qwen — генерация паспорта |
+| **LLM Markdown** | поле `llm_context` в ответе API | **Всегда** | n8n / Gemini / Qwen — генерация паспорта |
 | **PNG** | `{name}.png` | Если `render_png=true` (по умолчанию) | Превью, vision-модели, вложения в отчёты |
 
 > **Важно:** ветки JSON и LLM Markdown **не зависят** от PNG.  
@@ -74,10 +74,10 @@ flowchart TD
 ## Ветка 2 — LLM Engineering Context (Markdown)
 
 **Модуль:** `markdown_context` (сжатие normalized JSON)  
-**Файл:** `{name}_llm_context.md`  
+**Формат выдачи:** строка **`llm_context`** в JSON-ответе `POST /v1/convert` (отдельный `.md` файл **не создаётся**)  
 **Размер:** обычно **5–15 KB**, ~100–150 строк.
 
-### Структура файла
+### Структура текста `llm_context`
 
 | Секция Markdown | Назначение |
 |-----------------|------------|
@@ -96,7 +96,7 @@ flowchart TD
 
 ### Правила для коллеги (LLM-ветка)
 
-1. **В LLM передавать только `*_llm_context.md`**, не полный JSON.  
+1. **В LLM передавать поле `llm_context` из ответа API**, не полный JSON.  
 2. Проверять `validation_gate` в ответе API **до** вызова LLM:
 
 | `validation_gate.status` | Действие |
@@ -108,18 +108,17 @@ flowchart TD
 3. При `warn` в системном промпте указать:  
    *«Используй только факты из Markdown. Сомнительные размеры формулируй как „требует проверки по чертежу“.»*
 
-### Скачать только LLM-контекст (без PNG)
+### Получить LLM-контекст (без PNG)
 
 ```bash
-# 1. Конвертация — PNG можно отключить для ускорения
-curl -X POST "http://localhost:8000/v1/convert" \
+curl -s -X POST "http://localhost:8000/v1/convert" \
   -F "file=@samples/42-2 - Штифтодержатель.dxf" \
   -F "name=42-2" \
-  -F "render_png=false"
-
-# 2. Из ответа: download_urls.llm_context_md
-curl -o 42-2_llm_context.md "http://localhost:8000/v1/artifacts/JOB_ID/42-2_llm_context.md"
+  -F "render_png=false" \
+  | jq -r '.llm_context'
 ```
+
+Markdown сразу в поле **`llm_context`** — второй HTTP-запрос не нужен.
 
 ### n8n — ветка «только паспорт»
 
@@ -130,11 +129,9 @@ sequenceDiagram
   participant LLM
 
   n8n->>API: POST /v1/convert (render_png=false)
-  API-->>n8n: validation_gate + download_urls.llm_context_md
+  API-->>n8n: validation_gate + llm_context (текст)
   alt validation_gate.status = pass или warn
-    n8n->>API: GET llm_context_md
-    API-->>n8n: Markdown (~10 KB)
-    n8n->>LLM: system prompt + Markdown
+    n8n->>LLM: system prompt + llm_context
     LLM-->>n8n: Паспорт изделия
   else fail
     n8n-->>n8n: Алерт / ручная проверка
@@ -145,8 +142,7 @@ sequenceDiagram
 
 1. **HTTP Request** — `POST /v1/convert`, Body: Form-Data, поле `file`  
 2. **IF** — `{{ $json.validation_gate.status }}` ≠ `fail`  
-3. **HTTP Request** — GET `{{ $json.download_urls.llm_context_md }}`  
-4. **LLM** — System prompt + тело Markdown из шага 3  
+3. **LLM** — System prompt + `{{ $json.llm_context }}`  
 
 ---
 
@@ -205,7 +201,7 @@ sequenceDiagram
 | Поле | Тип | Обязательно | По умолчанию | Ветка | Описание |
 |------|-----|-------------|--------------|-------|----------|
 | `file` | file | да | — | все | Файл `.dxf` |
-| `name` | string | нет | имя файла | все | Базовое имя: `42-2` → `42-2.json`, `42-2_llm_context.md`, `42-2.png` |
+| `name` | string | нет | имя файла | все | Базовое имя: `42-2` → `42-2.json`, `42-2.png` |
 | `render_png` | bool | нет | `true` | PNG | `false` — только JSON + LLM Markdown |
 | `png_dpi` | int | нет | `300` | PNG | DPI превью (72–1200) |
 | `dxf_text_policy` | string | нет | `filling` | PNG | Режим отрисовки текста |
@@ -229,14 +225,13 @@ sequenceDiagram
     "errors": [],
     "warnings": []
   },
+  "llm_context": "# LLM Engineering Context\n\nЭтот Markdown является компактной инженерной выжимкой...",
   "files": {
     "json": "42-2.json",
-    "llm_context_md": "42-2_llm_context.md",
     "png": "42-2.png"
   },
   "download_urls": {
     "json": "http://localhost:8000/v1/artifacts/a1b2.../42-2.json",
-    "llm_context_md": "http://localhost:8000/v1/artifacts/a1b2.../42-2_llm_context.md",
     "png": "http://localhost:8000/v1/artifacts/a1b2.../42-2.png"
   }
 }
@@ -272,12 +267,11 @@ curl -X POST "http://localhost:8000/v1/convert" \
   -F "render_png=false"
 ```
 
-**Скачать артефакты:**
+**Скачать файловые артефакты (JSON / PNG):**
 
 ```bash
-curl -o 42-2_llm_context.md "http://localhost:8000/v1/artifacts/JOB_ID/42-2_llm_context.md"
-curl -o 42-2.png            "http://localhost:8000/v1/artifacts/JOB_ID/42-2.png"
-curl -o 42-2.json           "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json"
+curl -o 42-2.png  "http://localhost:8000/v1/artifacts/JOB_ID/42-2.png"
+curl -o 42-2.json "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json"
 ```
 
 ---
@@ -298,11 +292,6 @@ curl -o 42-2.json           "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json
       "url": "http://localhost:8000/v1/artifacts/a1b2.../42-2.json"
     },
     {
-      "name": "42-2_llm_context.md",
-      "size_bytes": 7189,
-      "url": "http://localhost:8000/v1/artifacts/a1b2.../42-2_llm_context.md"
-    },
-    {
       "name": "42-2.png",
       "size_bytes": 354649,
       "url": "http://localhost:8000/v1/artifacts/a1b2.../42-2.png"
@@ -321,19 +310,20 @@ curl -o 42-2.json           "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json
 |------|-------|--------------|
 | `42-2.png` | PNG | `image/png` |
 | `42-2.json` | JSON | `application/json` |
-| `42-2_llm_context.md` | LLM | `text/markdown` |
+
+> LLM Markdown — только в поле **`llm_context`** ответа `POST /v1/convert`, не как файл.
 
 ---
 
 ## Шпаргалка для коллеги
 
-| Задача | Что запрашивать | Что скачивать |
-|--------|-----------------|---------------|
-| Паспорт через LLM | `POST /v1/convert` | `llm_context_md` |
-| Превью чертежа | `POST /v1/convert` + `render_png=true` | `png` |
-| Аудит / отладка парсера | `POST /v1/convert` | `json` |
-| Быстро, без картинки | `render_png=false` | `llm_context_md` |
-| Проверка перед LLM | ответ `POST /v1/convert` | поле `validation_gate` |
+| Задача | Что запрашивать | Что брать из ответа |
+|--------|-----------------|---------------------|
+| Паспорт через LLM | `POST /v1/convert` | поле `llm_context` |
+| Превью чертежа | `POST /v1/convert` + `render_png=true` | `download_urls.png` |
+| Аудит / отладка парсера | `POST /v1/convert` | `download_urls.json` |
+| Быстро, без картинки | `render_png=false` | поле `llm_context` |
+| Проверка перед LLM | `POST /v1/convert` | поле `validation_gate` |
 
 ---
 

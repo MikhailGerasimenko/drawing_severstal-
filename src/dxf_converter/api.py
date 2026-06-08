@@ -41,6 +41,7 @@ class ConvertResponse(BaseModel):
     designation: str = ""
     product_name: str = ""
     validation_gate: ValidationGateResponse
+    llm_context: str = Field(description="LLM Engineering Context в Markdown (текст)")
     files: dict[str, str]
     download_urls: dict[str, str]
 
@@ -149,14 +150,9 @@ async def convert_endpoint(
         shutil.rmtree(job_dir, ignore_errors=True)
         raise HTTPException(status_code=422, detail=f"Ошибка конвертации: {exc}") from exc
 
-    semantic = result.normalized.semantic_candidates
-    files: dict[str, str] = {
-        "json": result.json_path.name,
-        "llm_context_md": result.llm_markdown_path.name,
-    }
+    files: dict[str, str] = {"json": result.json_path.name}
     download_urls: dict[str, str] = {
         "json": _artifact_url(request, job_id, result.json_path.name),
-        "llm_context_md": _artifact_url(request, job_id, result.llm_markdown_path.name),
     }
     if result.png_path:
         files["png"] = result.png_path.name
@@ -170,6 +166,7 @@ async def convert_endpoint(
         designation=_semantic_field(result.normalized, "designation"),
         product_name=_semantic_field(result.normalized, "product_name"),
         validation_gate=gate,
+        llm_context=result.llm_markdown_text,
         files=files,
         download_urls=download_urls,
     )
