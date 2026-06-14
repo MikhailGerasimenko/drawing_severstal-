@@ -41,6 +41,7 @@ python main.py --serve --host 0.0.0.0 --port 8000
 - Swagger UI: http://localhost:8000/docs  
 - ReDoc: http://localhost:8000/redoc  
 - Документация для коллег: **[API.md](./API.md)** — эндпоинты, ветки **PNG** и **LLM Markdown**, сценарии n8n
+- Системный промпт для n8n: **[docs/system_prompt_passport_markdown.md](./docs/system_prompt_passport_markdown.md)**
 
 ### Docker
 

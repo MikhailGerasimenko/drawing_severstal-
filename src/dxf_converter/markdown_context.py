@@ -19,6 +19,13 @@ def _product_name(semantic: dict[str, Any]) -> str:
     return value
 
 
+def _part_type(semantic: dict[str, Any], features: dict[str, Any]) -> str:
+    part = features.get("part_type", {}) if isinstance(features, dict) else {}
+    if isinstance(part, dict) and part.get("value"):
+        return str(part["value"])
+    return _product_name(semantic)
+
+
 def _format_value(value: Any) -> str:
     if value is None:
         return "Не указано"
@@ -104,6 +111,7 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
         f"- **units**: {drawing_facts.get('units', 'Не указано')}",
         "",
         "## Product Identity",
+        f"- **part_type**: {_part_type(semantic, features)}",
         f"- **product_name**: {_product_name(semantic)}",
         f"- **designation**: {_candidate_value(semantic, 'designation')}",
         f"- **overall_dimensions**: {overall_display}",
@@ -183,6 +191,7 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
             "",
             "## Output Task For LLM",
             "Сформируй паспорт изделия в Markdown по этому контексту.",
+            "Поле `part_type` — обязательный источник для строки «Тип» в разделе 1; не подставляй туда обозначение.",
             "Если `Validation Gate` содержит warnings/errors или есть `critical_unclassified`, не превращай сомнения в утверждения.",
             "Если факт есть только как low confidence или candidate, формулируй осторожно: `признаки присутствуют`, `требует проверки по чертежу`.",
         ]

@@ -40,6 +40,7 @@ class ConvertResponse(BaseModel):
     source_file: str
     designation: str = ""
     product_name: str = ""
+    part_type: str = ""
     validation_gate: ValidationGateResponse
     llm_context: str = Field(description="LLM Engineering Context в Markdown (текст)")
     files: dict[str, str]
@@ -71,6 +72,17 @@ def _semantic_field(normalized, key: str, default: str = "") -> str:
     if hasattr(value, "value"):
         return str(value.value or default)
     return default
+
+
+def _part_type_field(normalized) -> str:
+    semantic = normalized.semantic_candidates or {}
+    if isinstance(semantic, dict):
+        features = semantic.get("engineering_features", {})
+        if isinstance(features, dict):
+            part = features.get("part_type", {})
+            if isinstance(part, dict) and part.get("value"):
+                return str(part["value"])
+    return _semantic_field(normalized, "product_name")
 
 
 def _validation_gate(normalized) -> ValidationGateResponse:
@@ -111,6 +123,7 @@ async def convert_endpoint(
     request: Request,
     file: UploadFile = File(..., description="Файл чертежа .dxf"),
     name: str = Form("", description="Базовое имя артефактов (без расширения)"),
+    part_type: str = Form("", description="Тип детали (опционально, если не извлекается из имени файла)"),
     png_dpi: int = Form(300, ge=72, le=1200),
     render_png: bool = Form(True),
     dxf_text_policy: str = Form("filling"),
@@ -145,6 +158,7 @@ async def convert_endpoint(
             dxf_text_scale=dxf_text_scale,
             dxf_letter_spacing=dxf_letter_spacing,
             dxf_render_backend=dxf_render_backend,  # type: ignore[arg-type]
+            part_type_override=part_type.strip() or None,
         )
     except Exception as exc:
         shutil.rmtree(job_dir, ignore_errors=True)
@@ -165,6 +179,7 @@ async def convert_endpoint(
         source_file=input_name,
         designation=_semantic_field(result.normalized, "designation"),
         product_name=_semantic_field(result.normalized, "product_name"),
+        part_type=_part_type_field(result.normalized),
         validation_gate=gate,
         llm_context=result.llm_markdown_text,
         files=files,

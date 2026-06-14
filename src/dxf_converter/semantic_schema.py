@@ -13,6 +13,7 @@ from .models import (
     DrawingSemantics,
     SourceManifest,
 )
+from .part_identity import pick_part_type
 
 
 DESIGNATION_RE = re.compile(r"\b\d{1,4}(?:-\d+){0,4}\b")
@@ -161,10 +162,13 @@ def _collect_dimension_block_texts(summary: DxfSummary) -> list[str]:
 
 
 def _pick_name(summary: DxfSummary, text_evidence: list[str]) -> SemanticCandidate:
-    value = summary.title_guess or (text_evidence[0] if text_evidence else "Не указано в чертеже")
-    confidence = "high" if summary.title_guess else ("medium" if text_evidence else "low")
-    evidence = [summary.title_guess] if summary.title_guess else text_evidence[:3]
-    return SemanticCandidate(value=value, confidence=confidence, evidence=evidence)
+    part_type, confidence, evidence = pick_part_type(
+        file_name=summary.file_name,
+        title_guess=summary.title_guess,
+        text_evidence=text_evidence,
+        blocks=summary.blocks,
+    )
+    return SemanticCandidate(value=part_type, confidence=confidence, evidence=evidence)
 
 
 def _pick_designation(summary: DxfSummary, text_evidence: list[str]) -> SemanticCandidate:
@@ -609,6 +613,37 @@ def _build_engineering_features(
 
     if pitch and axial and pitch["normalized"].lower() == axial["normalized"].lower():
         conflicts.append("Один и тот же размер классифицирован как осевое отверстие и делительный диаметр.")
+
+    part_type, part_confidence, part_evidence = pick_part_type(
+        file_name=summary.file_name,
+        title_guess=summary.title_guess,
+        text_evidence=text_evidence,
+        blocks=summary.blocks,
+    )
+    features["part_type"] = {
+        "value": part_type,
+        "confidence": part_confidence,
+        "evidence": part_evidence,
+    }
+    features["llm_interpretation_rules"].append(
+        "Поле part_type / Тип детали берётся из штампа DXF (основная надпись); имя файла — только fallback."
+    )
+    if not features["external_contour"]:
+        features["llm_interpretation_rules"].append(
+            "Если External Contour пуст — в разделе 2 «ГЕОМЕТРИЯ» используй Explicit Dimension Tokens и inferred_geometry, группируя размеры по смыслу."
+        )
+    if not features["internal_system"]:
+        features["llm_interpretation_rules"].append(
+            "Если Internal System пуст — не пропускай внутренние элементы: ищи отверстия, расточки и фаски в Explicit Dimension Tokens."
+        )
+    if not features["special_elements"] and tokens:
+        features["llm_interpretation_rules"].append(
+            "Если Special Elements пуст — вынеси в спецэлементы все подтверждённые размеры из Explicit Dimension Tokens (отверстия, пазы, фаски, радиусы)."
+        )
+    if critical_unclassified:
+        features["llm_interpretation_rules"].append(
+            "Каждый размер из critical_unclassified должен попасть в паспорт либо в геометрию, либо в примечания как «требует проверки»."
+        )
 
     audit = {
         "dimension_texts_total": len(tokens),

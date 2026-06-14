@@ -5,6 +5,7 @@ from typing import Any, Optional, Union
 import ezdxf
 
 from .dxf_feature_collection import convert_dxf_to_feature_collection
+from .part_identity import extract_part_type_from_stamp, is_garbage_title
 from .models import DxfSummary
 
 
@@ -35,11 +36,17 @@ def _guess_designation(texts: list[str], file_name: str) -> Optional[str]:
     return None
 
 
-def _guess_title(texts: list[str], file_stem: str) -> Optional[str]:
-    priority = [t for t in texts if any(ch.isalpha() for ch in t) and len(t) > 4]
-    if priority:
-        return priority[0]
-    return file_stem
+def _guess_title(blocks: list[dict[str, Any]], text_entities: list[str], file_stem: str) -> Optional[str]:
+    stamp = extract_part_type_from_stamp(blocks)
+    if stamp:
+        return stamp[0]
+
+    for text in text_entities:
+        cleaned = _clean_dxf_text(text)
+        if not is_garbage_title(cleaned) and len(cleaned) > 4:
+            return cleaned
+
+    return file_stem if not is_garbage_title(file_stem) else None
 
 
 def _json_safe(value: Any) -> Any:
@@ -341,7 +348,8 @@ def parse_dxf(path: Union[str, Path]) -> DxfSummary:
             "height": float(extmax[1] - extmin[1]),
         }
 
-    title_guess = _guess_title(text_entities, dxf_path.stem)
+    blocks = _collect_blocks(doc)
+    title_guess = _guess_title(blocks, text_entities, dxf_path.stem)
     designation_guess = _guess_designation(text_entities, dxf_path.stem)
     feature_collection = convert_dxf_to_feature_collection(str(dxf_path))
     geometry_counts = {key: len(value) for key, value in geometry.items()}
@@ -381,7 +389,7 @@ def parse_dxf(path: Union[str, Path]) -> DxfSummary:
         feature_collection=feature_collection,
         raw_entities=raw_entities,
         raw_virtual_entities=raw_virtual_entities,
-        blocks=_collect_blocks(doc),
+        blocks=blocks,
         dimension_entities=dimension_entities,
         hatch_entities=hatch_entities,
         conversion_coverage=coverage,

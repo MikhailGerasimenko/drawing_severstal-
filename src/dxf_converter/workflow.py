@@ -52,6 +52,7 @@ def convert_dxf(
     dxf_letter_spacing: float = 1.0,
     dxf_render_backend: RenderBackend = "classic",
     save_llm_markdown_file: bool = False,
+    part_type_override: Optional[str] = None,
 ) -> ConvertArtifacts:
     """DXF → normalized JSON + PNG preview + компактный LLM Markdown (текст)."""
     out_path = Path(out_dir)
@@ -63,6 +64,29 @@ def convert_dxf(
     llm_path = out_path / f"{base_name}_llm_context.md"
 
     normalized = load_dxf(dxf_path, preview_path=str(png_path) if render_png else None)
+
+    if part_type_override and part_type_override.strip():
+        override = part_type_override.strip()
+        semantic = normalized.semantic_candidates
+        if isinstance(semantic, dict):
+            features = semantic.setdefault("engineering_features", {})
+            if isinstance(features, dict):
+                features["part_type"] = {
+                    "value": override,
+                    "confidence": "high",
+                    "evidence": ["api:part_type"],
+                }
+            semantic["product_name"] = {
+                "value": override,
+                "confidence": "high",
+                "evidence": ["api:part_type"],
+            }
+            if isinstance(features, dict):
+                features["part_type"] = {
+                    "value": override,
+                    "confidence": "high",
+                    "evidence": ["api:part_type"],
+                }
 
     if render_png:
         render_dxf_to_png(

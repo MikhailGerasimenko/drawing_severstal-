@@ -82,7 +82,7 @@ flowchart TD
 | Секция Markdown | Назначение |
 |-----------------|------------|
 | `Source` | Имя DXF, единицы (mm) |
-| `Product Identity` | Наименование, обозначение, габариты, материал |
+| `Product Identity` | **`part_type`** (тип детали), обозначение, габариты, материал |
 | `Validation Gate` | `status`, `ready_for_llm`, warnings/errors |
 | `Required Interpretation Rules` | Правила для LLM (не путать Ø45 с Ø11 и т.д.) |
 | `Overall` | Габариты, таблица исполнений L |
@@ -97,7 +97,8 @@ flowchart TD
 ### Правила для коллеги (LLM-ветка)
 
 1. **В LLM передавать поле `llm_context` из ответа API**, не полный JSON.  
-2. Проверять `validation_gate` в ответе API **до** вызова LLM:
+2. **Тип детали** — из `part_type` внутри `llm_context` (секция Product Identity), не из обозначения.  
+3. Проверять `validation_gate` в ответе API **до** вызова LLM:
 
 | `validation_gate.status` | Действие |
 |--------------------------|----------|
@@ -202,6 +203,7 @@ sequenceDiagram
 |------|-----|-------------|--------------|-------|----------|
 | `file` | file | да | — | все | Файл `.dxf` |
 | `name` | string | нет | имя файла | все | Базовое имя: `42-2` → `42-2.json`, `42-2.png` |
+| `part_type` | string | нет | — | LLM | Явный тип детали, если имя файла при загрузке потеряно (`Компенсатор`) |
 | `render_png` | bool | нет | `true` | PNG | `false` — только JSON + LLM Markdown |
 | `png_dpi` | int | нет | `300` | PNG | DPI превью (72–1200) |
 | `dxf_text_policy` | string | нет | `filling` | PNG | Режим отрисовки текста |
@@ -219,6 +221,7 @@ sequenceDiagram
   "source_file": "42-2 - Штифтодержатель.dxf",
   "designation": "42-2",
   "product_name": "Штифтодержатель",
+  "part_type": "Штифтодержатель",
   "validation_gate": {
     "status": "pass",
     "ready_for_llm": true,
@@ -319,7 +322,7 @@ curl -o 42-2.json "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json"
 
 | Задача | Что запрашивать | Что брать из ответа |
 |--------|-----------------|---------------------|
-| Паспорт через LLM | `POST /v1/convert` | поле `llm_context` |
+| Паспорт через LLM | `POST /v1/convert` | поле `llm_context`, внутри — `part_type` |
 | Превью чертежа | `POST /v1/convert` + `render_png=true` | `download_urls.png` |
 | Аудит / отладка парсера | `POST /v1/convert` | `download_urls.json` |
 | Быстро, без картинки | `render_png=false` | поле `llm_context` |
@@ -334,6 +337,18 @@ curl -o 42-2.json "http://localhost:8000/v1/artifacts/JOB_ID/42-2.json"
 | `ARTIFACTS_DIR` | `data/artifacts` | Каталог хранения результатов |
 | `CORS_ORIGINS` | `*` | CORS для фронта/n8n |
 | `HOST` / `PORT` | — | Задаются при запуске (`main.py --serve`) |
+
+---
+
+## Источники `part_type` (тип детали)
+
+| Приоритет | Источник | Пример |
+|-----------|----------|--------|
+| 1 | **Штамп DXF** (основная надпись) | блок `U4`: `Компенсатор` |
+| 2 | Поле формы `part_type` | ручной override через API |
+| 3 | Имя файла | только fallback, если штамп не распознан |
+
+Системный промпт для n8n: `docs/system_prompt_passport_markdown.md`
 
 ---
 
