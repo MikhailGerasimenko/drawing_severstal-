@@ -5,7 +5,13 @@ from typing import Any, Optional, Union
 import ezdxf
 
 from .dxf_feature_collection import convert_dxf_to_feature_collection
-from .part_identity import extract_part_type_from_stamp, is_garbage_title
+from .part_identity import (
+    clean_dxf_markup,
+    extract_designation_from_stamp,
+    extract_part_type_from_stamp,
+    is_garbage_title,
+    is_generic_upload_name,
+)
 from .models import DxfSummary
 
 
@@ -27,9 +33,25 @@ def _clean_dxf_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _guess_designation(texts: list[str], file_name: str) -> Optional[str]:
-    pattern = re.compile(r"\b\d{1,4}(?:-\d+){1,4}\b")
-    for line in [file_name, *texts]:
+def _guess_designation(
+    texts: list[str],
+    file_name: str,
+    blocks: Optional[list[dict[str, Any]]] = None,
+) -> Optional[str]:
+    if blocks:
+        stamp = extract_designation_from_stamp(blocks)
+        if stamp:
+            return stamp[0]
+
+    pattern = re.compile(
+        r"\b\d{1,4}/\d{2,4}(?:-\d{2})?\b"
+        r"|\b\d{1,4}(?:-\d+){1,4}(?:-\d{2})?\b"
+    )
+    stem = Path(file_name).stem if file_name else ""
+    search_lines = texts[:]
+    if stem and not is_generic_upload_name(file_name):
+        search_lines = [stem, *texts]
+    for line in search_lines:
         found = pattern.search(line)
         if found:
             return found.group(0)
@@ -274,6 +296,27 @@ def _collect_geometry(entity: Any, geometry: dict[str, list[dict[str, Any]]]) ->
             )
 
 
+def _collect_block_text_entities(blocks: list[dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        name = str(block.get("name") or "")
+        if not name.upper().startswith("U"):
+            continue
+        for entity in block.get("entities") or []:
+            if entity.get("type") not in {"MTEXT", "TEXT", "ATTRIB"}:
+                continue
+            for key in ("text", "raw_text"):
+                raw = entity.get(key)
+                if not raw:
+                    continue
+                cleaned = clean_dxf_markup(str(raw))
+                if cleaned and cleaned not in seen:
+                    seen.add(cleaned)
+                    texts.append(cleaned)
+    return texts
+
+
 def parse_dxf(path: Union[str, Path]) -> DxfSummary:
     dxf_path = Path(path)
     doc = ezdxf.readfile(dxf_path)
@@ -349,8 +392,16 @@ def parse_dxf(path: Union[str, Path]) -> DxfSummary:
         }
 
     blocks = _collect_blocks(doc)
-    title_guess = _guess_title(blocks, text_entities, dxf_path.stem)
-    designation_guess = _guess_designation(text_entities, dxf_path.stem)
+    block_texts = _collect_block_text_entities(blocks)
+    merged_texts = text_entities[:]
+    seen_texts = set(merged_texts)
+    for item in block_texts:
+        if item not in seen_texts:
+            merged_texts.append(item)
+            seen_texts.add(item)
+
+    title_guess = _guess_title(blocks, merged_texts, dxf_path.stem)
+    designation_guess = _guess_designation(merged_texts, dxf_path.name, blocks)
     feature_collection = convert_dxf_to_feature_collection(str(dxf_path))
     geometry_counts = {key: len(value) for key, value in geometry.items()}
     coverage = {
@@ -378,7 +429,7 @@ def parse_dxf(path: Union[str, Path]) -> DxfSummary:
         dimensions=sorted(dimensions)[:200],
         layers=layers[:200],
         bounding_box=bbox,
-        extracted_texts=text_entities[:400],
+        extracted_texts=merged_texts[:400],
         geometry={
             "lines": geometry["lines"][:30000],
             "circles": geometry["circles"][:10000],

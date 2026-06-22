@@ -13,12 +13,16 @@ from .models import (
     DrawingSemantics,
     SourceManifest,
 )
-from .part_identity import pick_part_type
+from .dimension_classifier import apply_generic_dimension_classification
+from .gdt_extractor import extract_gdt
+from .part_identity import is_gost_reference, pick_designation, pick_part_type
 
 
-DESIGNATION_RE = re.compile(r"\b\d{1,4}(?:-\d+){0,4}\b")
+DESIGNATION_RE = re.compile(
+    r"\b\d{1,4}/\d{2,4}(?:-\d{2})?\b"
+    r"|\b\d{1,4}(?:-\d+){1,4}(?:-\d{2})?\b"
+)
 MATERIAL_RE = re.compile(r"(сталь|бронза|латунь|алюминий|чугун|hrc|гост)", re.IGNORECASE)
-GDT_RE = re.compile(r"(биени|симметрич|допуск|⌅|∥|⟂|○|◎|\bT\s*0[,.]\d+|\b0[,.]\d+\s*[А-ЯA-Z]\b)", re.IGNORECASE)
 DXF_PREFIX_RE = re.compile(r"^(?:\.\d+(?:[,.]\d+)?;)+")
 DIMENSION_TOKEN_RE = re.compile(
     "|".join(
@@ -172,17 +176,13 @@ def _pick_name(summary: DxfSummary, text_evidence: list[str]) -> SemanticCandida
 
 
 def _pick_designation(summary: DxfSummary, text_evidence: list[str]) -> SemanticCandidate:
-    if summary.designation_guess:
-        return SemanticCandidate(
-            value=summary.designation_guess,
-            confidence="high",
-            evidence=[summary.designation_guess],
-        )
-    for text in text_evidence:
-        match = DESIGNATION_RE.search(text)
-        if match:
-            return SemanticCandidate(value=match.group(0), confidence="medium", evidence=[text])
-    return SemanticCandidate(value="Не указано в чертеже", confidence="low", evidence=[])
+    designation, confidence, evidence = pick_designation(
+        file_name=summary.file_name,
+        text_evidence=text_evidence,
+        blocks=summary.blocks,
+        designation_guess=summary.designation_guess,
+    )
+    return SemanticCandidate(value=designation, confidence=confidence, evidence=evidence)
 
 
 def _pick_material(text_evidence: list[str]) -> SemanticCandidate:
@@ -397,7 +397,7 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
 def _build_engineering_features(
     summary: DxfSummary,
     text_evidence: list[str],
-    gdt_facts: list[str],
+    gdt_features: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[str]]:
     tokens = _extract_dimension_tokens(text_evidence)
     classified: set[str] = set()
@@ -577,14 +577,13 @@ def _build_engineering_features(
         )
         _mark_classified(classified, *groove_tokens)
 
-    for text in gdt_facts:
-        features["gdt"].append(
-            _fact("gdt_candidate", text, label="Кандидат ГДТ", source=_source(text), confidence="medium")
-        )
+    apply_generic_dimension_classification(features, tokens, classified, text_evidence)
+
+    features["gdt"].extend(gdt_features)
 
     for text in text_evidence:
         lowered = text.lower()
-        if any(marker in lowered for marker in ("маркир", "тверд", "твёрд", "hrc", "h14", "it14", "ra")):
+        if any(marker in lowered for marker in ("маркир", "тверд", "твёрд", "hrc", "h14", "it14")):
             features["technical_requirements"].append(
                 _fact(
                     "technical_requirement",
@@ -681,9 +680,13 @@ def _build_validation_gate(
         warnings.append("Не найдены надежные габариты детали.")
     if not engineering_features.get("external_contour"):
         warnings.append("Не классифицирован наружный контур.")
-    if not engineering_features.get("internal_system"):
+    internal_fits = any(
+        re.search(r"H\d+", str(token.get("normalized", "")), re.IGNORECASE)
+        for token in engineering_features.get("explicit_dimensions", [])
+    )
+    if not engineering_features.get("internal_system") and internal_fits:
         warnings.append("Не классифицирована внутренняя система/осевое отверстие.")
-    if critical_unclassified:
+    if critical_unclassified and len(critical_unclassified) > 3:
         warnings.append(
             f"Есть критичные нераспознанные размеры: {len(critical_unclassified)}. "
             "Перед генерацией паспорта проверьте critical_unclassified."
@@ -705,12 +708,12 @@ def _build_validation_gate(
 def build_semantic_passport_json(summary: DxfSummary) -> DrawingSemantics:
     text_evidence = collect_text_evidence(summary)
     geometry_facts = [f"{key}: {count}" for key, count in summary.entity_counts.items()]
-    gdt_facts = [text for text in text_evidence if GDT_RE.search(text)]
+    gdt_facts, gdt_features = extract_gdt(text_evidence)
     notes_facts = text_evidence[:50]
     engineering_features, extraction_audit, critical_unclassified, conflicts = _build_engineering_features(
         summary,
         text_evidence,
-        gdt_facts,
+        gdt_features,
     )
 
     semantic = DrawingSemantics(

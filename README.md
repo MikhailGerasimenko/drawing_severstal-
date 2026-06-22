@@ -43,6 +43,8 @@ python main.py --serve --host 0.0.0.0 --port 8000
 - Документация для коллег: **[API.md](./API.md)** — эндпоинты, ветки **PNG** и **LLM Markdown**, сценарии n8n
 - Системный промпт для n8n: **[docs/system_prompt_passport_markdown.md](./docs/system_prompt_passport_markdown.md)**
 
+> **Для интеграторов:** можно загружать DXF как `drawing.dxf` — обозначение и тип детали извлекаются из **штампа внутри файла**, не из имени.
+
 ### Docker
 
 ```bash
@@ -60,6 +62,7 @@ docker compose up --build
 ├── docker-compose.yml
 ├── API.md                  # Документация REST для коллег
 ├── samples/                # Примеры DXF
+├── eval/golden/            # Эталонные пары DXF + паспорт (см. README внутри)
 ├── output/                 # Результаты CLI (gitignore, не коммитить)
 └── src/dxf_converter/
     ├── api.py              # FastAPI микросервис

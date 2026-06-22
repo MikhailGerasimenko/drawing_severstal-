@@ -10,12 +10,15 @@ def _candidate_value(semantic: dict[str, Any], key: str) -> str:
     return "Не указано в чертеже"
 
 
-def _product_name(semantic: dict[str, Any]) -> str:
+def _product_name(semantic: dict[str, Any], features: dict[str, Any]) -> str:
+    part = _part_type(semantic, features)
+    if part != "Не указано в чертеже":
+        return part
     value = _candidate_value(semantic, "product_name")
     designation = _candidate_value(semantic, "designation")
     prefix = f"{designation} - "
     if value.startswith(prefix):
-        return value[len(prefix):].strip()
+        return value[len(prefix) :].strip()
     return value
 
 
@@ -112,7 +115,7 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
         "",
         "## Product Identity",
         f"- **part_type**: {_part_type(semantic, features)}",
-        f"- **product_name**: {_product_name(semantic)}",
+        f"- **product_name**: {_product_name(semantic, features)}",
         f"- **designation**: {_candidate_value(semantic, 'designation')}",
         f"- **overall_dimensions**: {overall_display}",
         f"- **material_hardness**: {_candidate_value(semantic, 'material_hardness')}",
@@ -149,6 +152,11 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
         tech = _dedupe_facts([item for item in tech if isinstance(item, dict)], limit=30)
     lines.extend(_fact_section("Technical Requirements", tech, empty="Технические требования не найдены."))
     lines.append("")
+
+    inferred = features.get("inferred_geometry", {})
+    if isinstance(inferred, dict) and inferred:
+        lines.extend(_fact_section("Inferred Geometry", inferred, empty=""))
+        lines.append("")
 
     lines.extend(
         [
@@ -191,7 +199,7 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
             "",
             "## Output Task For LLM",
             "Сформируй паспорт изделия в Markdown по этому контексту.",
-            "Поле `part_type` — обязательный источник для строки «Тип» в разделе 1; не подставляй туда обозначение.",
+            "Поле `part_type` и `product_name` в Product Identity — синонимы; используй их для типа детали, не подставляй обозначение.",
             "Если `Validation Gate` содержит warnings/errors или есть `critical_unclassified`, не превращай сомнения в утверждения.",
             "Если факт есть только как low confidence или candidate, формулируй осторожно: `признаки присутствуют`, `требует проверки по чертежу`.",
         ]

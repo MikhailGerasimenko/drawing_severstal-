@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "description": "Список пар DXF + эталонный паспорт. Скопируйте в manifest.json.",
+  "pairs": [
+    {
+      "id": "case_01",
+      "drawing": "drawings/07-54-105.dxf",
+      "passport": "passports/07-54-105.md",
+      "notes": "сложность 3, фланец"
+    }
+  ]
+}

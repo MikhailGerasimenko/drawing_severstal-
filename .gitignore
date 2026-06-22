@@ -9,3 +9,7 @@ __pycache__/
 .env
 output/
 data/
+eval/runs/
+
+# OpenRouter / секреты
+.env
