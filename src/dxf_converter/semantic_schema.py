@@ -15,6 +15,11 @@ from .models import (
 )
 from .dimension_classifier import apply_generic_dimension_classification
 from .gdt_extractor import extract_gdt
+from .overall_display import (
+    cleanup_external_contour,
+    filter_critical_unclassified,
+    finalize_overall_display,
+)
 from .part_identity import is_gost_reference, pick_designation, pick_part_type
 
 
@@ -36,6 +41,7 @@ DIMENSION_TOKEN_RE = re.compile(
             r"\b\d+(?:[,.]\d+)?\s*[xх×]\s*\d+(?:[,.]\d+)?\s*°\b",
             r"\b\d+(?:[,.]\d+)?\s*°(?:\s*±\s*\d+(?:[,.]\d+)?°?)?",
             r"\bIT\d+(?:/2)?\b",
+            r"\bM\d+(?:[,.]\d+)?(?:-\d+[A-Za-z])?\b",
         ]
     ),
     re.IGNORECASE,
@@ -394,6 +400,56 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
     }
 
 
+def _extract_diameter_execution_table(text_evidence: list[str]) -> dict[str, Any]:
+    joined = " ".join(text_evidence)
+    fit_match = re.search(r"\bd-d(\d+)\b", joined, re.IGNORECASE)
+    if not fit_match:
+        return {}
+
+    diameters: list[float] = []
+    for item in text_evidence:
+        token = item.strip().replace(",", ".")
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            value = float(token)
+            if 3 <= value <= 200 and value not in diameters:
+                diameters.append(value)
+
+    if len(diameters) < 2:
+        return {}
+
+    values = sorted(diameters)
+    fit = f"d{fit_match.group(1)}"
+    return {
+        "parameter": "d",
+        "fit": fit,
+        "min": values[0],
+        "max": values[-1],
+        "values": values[:20],
+        "source": "text_table",
+        "confidence": "medium",
+    }
+
+
+def _apply_diameter_execution_table(
+    features: dict[str, Any],
+    diameter_table: dict[str, Any],
+) -> None:
+    features["overall"]["diameter_table"] = diameter_table
+    fit = diameter_table.get("fit", "")
+    for value in diameter_table.get("values", []):
+        rendered = f"Ø{value:g}{fit}"
+        features["external_contour"].append(
+            _fact(
+                "execution_diameter",
+                rendered,
+                label="Диаметр по исполнению",
+                source=_source("text_table"),
+                confidence="medium",
+                note="Взято из таблицы исполнений d.",
+            )
+        )
+
+
 def _build_engineering_features(
     summary: DxfSummary,
     text_evidence: list[str],
@@ -448,11 +504,13 @@ def _build_engineering_features(
     execution_table = _extract_execution_table(text_evidence)
     if execution_table:
         features["overall"]["length_table"] = execution_table
-        if "max_diameter" in features["overall"]:
-            features["overall"]["display"] = (
-                f"{features['overall']['max_diameter']} x L "
-                f"(L={execution_table['min']:g}...{execution_table['max']:g})"
-            )
+
+    diameter_table = _extract_diameter_execution_table(text_evidence)
+    if diameter_table:
+        _apply_diameter_execution_table(features, diameter_table)
+        features["llm_interpretation_rules"].append(
+            "Таблица исполнений d содержит варианты наружного диаметра; не подменяй их одним значением без указания исполнения."
+        )
 
     axial = _first_token(tokens, r"^Ø11(?:\(|$)")
     if axial:
@@ -580,6 +638,8 @@ def _build_engineering_features(
     apply_generic_dimension_classification(features, tokens, classified, text_evidence)
 
     features["gdt"].extend(gdt_features)
+    cleanup_external_contour(features)
+    finalize_overall_display(features, tokens)
 
     for text in text_evidence:
         lowered = text.lower()
@@ -602,13 +662,7 @@ def _build_engineering_features(
         for token in tokens
         if token["normalized"].lower() not in classified
     ]
-    critical_unclassified = []
-    critical_seen: set[str] = set()
-    for token in unclassified:
-        normalized = token["normalized"].lower()
-        if normalized not in critical_seen and CRITICAL_DIMENSION_RE.search(token["normalized"]):
-            critical_seen.add(normalized)
-            critical_unclassified.append(token)
+    critical_unclassified = filter_critical_unclassified(unclassified)
 
     if pitch and axial and pitch["normalized"].lower() == axial["normalized"].lower():
         conflicts.append("Один и тот же размер классифицирован как осевое отверстие и делительный диаметр.")
@@ -686,7 +740,7 @@ def _build_validation_gate(
     )
     if not engineering_features.get("internal_system") and internal_fits:
         warnings.append("Не классифицирована внутренняя система/осевое отверстие.")
-    if critical_unclassified and len(critical_unclassified) > 3:
+    if critical_unclassified and len(critical_unclassified) > 5:
         warnings.append(
             f"Есть критичные нераспознанные размеры: {len(critical_unclassified)}. "
             "Перед генерацией паспорта проверьте critical_unclassified."
@@ -715,13 +769,19 @@ def build_semantic_passport_json(summary: DxfSummary) -> DrawingSemantics:
         text_evidence,
         gdt_features,
     )
+    overall_display = engineering_features.get("overall", {}).get("display")
+    overall_dimensions = (
+        SemanticCandidate(value=overall_display, confidence="high", evidence=[overall_display])
+        if overall_display
+        else _pick_dimensions(summary)
+    )
 
     semantic = DrawingSemantics(
         product_name=_pick_name(summary, text_evidence),
         designation=_pick_designation(summary, text_evidence),
         units=_pick_units(summary),
         material_hardness=_pick_material(text_evidence),
-        overall_dimensions=_pick_dimensions(summary),
+        overall_dimensions=overall_dimensions,
         geometry_facts=geometry_facts,
         gdt_facts=gdt_facts,
         notes_facts=notes_facts,

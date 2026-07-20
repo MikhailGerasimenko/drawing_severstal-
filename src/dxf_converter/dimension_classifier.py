@@ -4,12 +4,15 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
-INTERNAL_FIT_RE = re.compile(r"H\d+|C\d+", re.IGNORECASE)
-EXTERNAL_FIT_RE = re.compile(r"[efgs]\d+", re.IGNORECASE)
+INTERNAL_FIT_RE = re.compile(r"H\d+")
+SHAFT_FIT_RE = re.compile(r"(?<![A-Za-zА-Яа-я])([a-z]{1,2}\d+)(?![A-Za-zА-Яа-я])")
+EXTERNAL_FIT_RE = re.compile(r"[bcefghjs]\d+", re.IGNORECASE)
 DIAMETER_VALUE_RE = re.compile(r"[Ø∅]\s*(\d+(?:[,.]\d+)?)", re.IGNORECASE)
 PITCH_ANGLE_RE = re.compile(r"(?:\d+\s*[xх×]\s*)?\d+\s*°", re.IGNORECASE)
-LENGTH_TOLERANCE_RE = re.compile(r"^L\s*-?\s*\d", re.IGNORECASE)
+LENGTH_TOLERANCE_RE = re.compile(r"^L\s*-?\s*\d")
 LENGTH_MM_RE = re.compile(r"^\d+(?:[,.]\d+)?\s*(?:±|\+|-)", re.IGNORECASE)
+DIMENSION_LABEL_RE = re.compile(r"^[lL]\d+$")
+THREAD_RE = re.compile(r"^M\d+(?:[,.]\d+)?(?:-\d+[A-Za-z])?", re.IGNORECASE)
 
 
 def _parse_diameter_mm(normalized: str) -> float:
@@ -19,8 +22,30 @@ def _parse_diameter_mm(normalized: str) -> float:
     return float(match.group(1).replace(",", "."))
 
 
+def _has_shaft_fit(normalized: str) -> bool:
+    if INTERNAL_FIT_RE.search(normalized):
+        return False
+    return bool(SHAFT_FIT_RE.search(normalized))
+
+
+def _has_internal_fit(normalized: str) -> bool:
+    return bool(INTERNAL_FIT_RE.search(normalized))
+
+
 def _is_diameter_token(token: dict[str, Any]) -> bool:
     return bool(DIAMETER_VALUE_RE.search(token.get("normalized", "")))
+
+
+def _is_dimension_label(normalized: str) -> bool:
+    return bool(DIMENSION_LABEL_RE.match(normalized))
+
+
+def _is_length_token(normalized: str) -> bool:
+    if _is_dimension_label(normalized):
+        return False
+    if LENGTH_TOLERANCE_RE.search(normalized):
+        return True
+    return bool(LENGTH_MM_RE.search(normalized))
 
 
 def _fact(
@@ -57,8 +82,8 @@ def apply_generic_dimension_classification(
     available = [token for token in tokens if token["normalized"].lower() not in classified]
     diameters = [token for token in available if _is_diameter_token(token)]
 
-    internal = [token for token in diameters if INTERNAL_FIT_RE.search(token["normalized"])]
-    external = [token for token in diameters if EXTERNAL_FIT_RE.search(token["normalized"])]
+    internal = [token for token in diameters if _has_internal_fit(token["normalized"])]
+    external = [token for token in diameters if _has_shaft_fit(token["normalized"])]
     plain = [
         token
         for token in diameters
@@ -69,6 +94,7 @@ def apply_generic_dimension_classification(
     _classify_external_shafts(features, external, classified)
     _classify_internal_holes(features, internal, classified)
     _classify_plain_diameters(features, plain, classified)
+    _classify_threads(features, available, classified)
     _classify_lengths(features, available, classified)
     _classify_chamfers_generic(features, available, classified)
 
@@ -85,12 +111,12 @@ def _classify_pitch_hole_groups(
     classified: set[str],
     text_evidence: list[str],
 ) -> None:
-    hole_tokens = [token for token in diameters if INTERNAL_FIT_RE.search(token["normalized"])]
+    hole_tokens = [token for token in diameters if _has_internal_fit(token["normalized"])]
     pitch_candidates = [
         token
         for token in diameters
-        if not INTERNAL_FIT_RE.search(token["normalized"])
-        and not EXTERNAL_FIT_RE.search(token["normalized"])
+        if not _has_internal_fit(token["normalized"])
+        and not _has_shaft_fit(token["normalized"])
         and _parse_diameter_mm(token["normalized"]) > 0
     ]
     has_angle = any(PITCH_ANGLE_RE.search(item) for item in text_evidence)
@@ -138,7 +164,7 @@ def _classify_external_shafts(
         return
     ordered = sorted(external, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
     main = ordered[0]
-    if not features["external_contour"]:
+    if not any(item.get("type") == "outer_diameter" for item in features["external_contour"]):
         features["external_contour"].append(
             _fact(
                 "outer_diameter",
@@ -151,7 +177,7 @@ def _classify_external_shafts(
         features["overall"]["max_diameter"] = main["value"]
         _mark(classified, main)
 
-    for step in ordered[1:3]:
+    for step in ordered[1:4]:
         if step["normalized"].lower() in classified:
             continue
         features["external_contour"].append(
@@ -210,7 +236,34 @@ def _classify_plain_diameters(
     if not plain:
         return
     ordered = sorted(plain, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
-    if not features["external_contour"] and ordered:
+    current_outer = next(
+        (fact for fact in features["external_contour"] if fact.get("type") == "outer_diameter"),
+        None,
+    )
+    if current_outer and ordered:
+        largest = ordered[0]
+        largest_d = _parse_diameter_mm(largest["normalized"])
+        current_d = _parse_diameter_mm(str(current_outer.get("value", "")))
+        if largest_d > current_d + 0.01:
+            current_outer["type"] = "external_step_diameter"
+            current_outer["label"] = "Наружная ступень"
+            current_outer["confidence"] = current_outer.get("confidence", "medium")
+            features["external_contour"].insert(
+                0,
+                _fact(
+                    "outer_diameter",
+                    largest["value"],
+                    label="Основной наружный диаметр",
+                    source=largest["source"],
+                    confidence="medium",
+                    note="Наибольший Ø без посадки; меньшие посадочные Ø — ступени.",
+                ),
+            )
+            features["overall"]["max_diameter"] = largest["value"]
+            _mark(classified, largest)
+            ordered = ordered[1:]
+
+    if not any(item.get("type") == "outer_diameter" for item in features["external_contour"]) and ordered:
         main = ordered[0]
         features["external_contour"].append(
             _fact(
@@ -244,6 +297,38 @@ def _classify_plain_diameters(
             break
 
 
+def _classify_threads(
+    features: dict[str, Any],
+    available: list[dict[str, Any]],
+    classified: set[str],
+) -> None:
+    threads = [token for token in available if THREAD_RE.search(token.get("normalized", ""))]
+    if not threads:
+        return
+    if not any(item.get("type") == "thread" for item in features["special_elements"]):
+        features["special_elements"].append(
+            _fact(
+                "thread",
+                [token["value"] for token in threads[:6]],
+                label="Резьба",
+                source=threads[0]["source"],
+                confidence="high",
+            )
+        )
+    _mark(classified, *threads)
+
+
+def _parse_length_value(normalized: str) -> float | None:
+    token = normalized.replace(" ", "")
+    match = re.match(r"^L-?(\d+(?:,\d+)?)", token, re.IGNORECASE)
+    if match:
+        return float(match.group(1).replace(",", "."))
+    match = re.match(r"^(\d+(?:,\d+)?)(?:±|\+|-)", token)
+    if match:
+        return float(match.group(1).replace(",", "."))
+    return None
+
+
 def _classify_lengths(
     features: dict[str, Any],
     available: list[dict[str, Any]],
@@ -252,23 +337,19 @@ def _classify_lengths(
     length_tokens = [
         token
         for token in available
-        if LENGTH_TOLERANCE_RE.search(token["normalized"]) or LENGTH_MM_RE.search(token["normalized"])
+        if _is_length_token(token.get("normalized", ""))
     ]
     if not length_tokens:
         return
-    values = [token["value"] for token in length_tokens[:5]]
-    if "display" not in features["overall"] and values:
-        features["overall"]["display"] = ", ".join(values)
-        if features["external_contour"]:
-            features["external_contour"].append(
-                _fact(
-                    "overall_length",
-                    values[0],
-                    label="Габаритная длина",
-                    source=length_tokens[0]["source"],
-                    confidence="medium",
-                )
-            )
+    scored = [(token, _parse_length_value(token["normalized"])) for token in length_tokens]
+    scored = [(token, value) for token, value in scored if value is not None]
+    if not scored:
+        for token in length_tokens:
+            _mark(classified, token)
+        return
+    main = max(scored, key=lambda item: item[1])[0]
+    if "main_length" not in features["overall"]:
+        features["overall"]["main_length"] = main["value"]
     for token in length_tokens:
         _mark(classified, token)
 

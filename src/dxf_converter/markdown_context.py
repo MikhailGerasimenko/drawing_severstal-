@@ -126,6 +126,10 @@ def render_llm_markdown_context(normalized: NormalizedDrawing) -> str:
         f"- **errors**: {_format_value(gate.get('errors', [])) or 'нет'}",
         f"- **warnings**: {_format_value(gate.get('warnings', [])) or 'нет'}",
         "",
+        "## Data Quality",
+        f"- **conflicts**: {_format_value(semantic.get('conflicts', [])) or 'нет'}",
+        f"- **missing_fields**: {_format_value(semantic.get('missing_fields', [])) or 'нет'}",
+        "",
         "## Required Interpretation Rules",
     ]
 
