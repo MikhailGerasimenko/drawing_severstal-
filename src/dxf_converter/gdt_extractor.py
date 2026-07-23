@@ -192,7 +192,7 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
                 label="Шероховатость поверхностей",
                 source=_source(line),
                 confidence="high",
-                note="Значения Ra из аннотаций чертежа; привязка к конкретным поверхностям требует визуальной проверки.",
+                note="Значения Ra из аннотаций. Общую Ra (правый верхний угол) укажи один раз; локальные Ra — у соответствующих поверхностей в геометрии.",
             )
         )
 
@@ -208,11 +208,14 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
         features.append(
             _fact(
                 "form_tolerance",
-                {"tolerance_mm": value, "related_geometry": outer_diams[:3]},
-                label="Допуск формы / биение (кандидат)",
+                {"tolerance_mm": value, "related_geometry": outer_diams[:3], "base_hint": "A"},
+                label="Допуск формы / биение",
                 source=_source(source_text),
                 confidence="medium" if outer_diams else "low",
-                note="На чертеже указано только числовое значение рамки ГДТ без текстовой расшифровки.",
+                note=(
+                    "Число из рамки ГДТ. В паспорте формулируй как биение относительно базы А "
+                    "(радиальное/торцевое — по символу на чертеже), не оставляй только «0,0x мм»."
+                ),
             )
         )
 

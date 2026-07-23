@@ -12,11 +12,11 @@ DESIGNATION_RE = re.compile(
     r"/\d{2,4}(?:-\d{2})?"
     r"|"
     r"(?:-\d+){1,4}(?:-\d{2})?"
-    r")$"
+    r")(?:\.\d+)?$"
 )
 DESIGNATION_SEARCH_RE = re.compile(
-    r"\b\d{1,4}/\d{2,4}(?:-\d{2})?\b"
-    r"|\b\d{1,4}(?:-\d+){1,4}(?:-\d{2})?\b"
+    r"(?<![\d./])\d{1,4}/\d{2,4}(?:-\d{2})?(?:\.\d+)?(?![\d.])"
+    r"|(?<![\d./])\d{1,4}(?:-\d+){1,4}(?:-\d{2})?(?:\.\d+)?(?![\d.])"
 )
 GOST_REFERENCE_RE = re.compile(r"^\d{4}-\d{2,4}$")
 GENERIC_FILE_STEMS = frozenset({"drawing", "input", "untitled", "document", "file", "upload"})
@@ -109,7 +109,8 @@ def _is_stamp_product_name(text: str) -> bool:
         return False
     if re.search(r"\d", cleaned):
         return False
-    if re.fullmatch(r"[А-Яа-яЁё][А-Яа-яЁё\-]{2,40}", cleaned):
+    # Однословные и многословные наименования из штампа: «Проставка», «Втулка отрезная».
+    if re.fullmatch(r"[А-Яа-яЁё][А-Яа-яЁё\-]*(?:\s+[А-Яа-яЁё][А-Яа-яЁё\-]*){0,5}", cleaned):
         return True
     return False
 
@@ -166,6 +167,8 @@ def _designation_score(
     score = len(value) * 3
     if "/" in value:
         score += 40
+    if "." in value:
+        score += 25  # Предпочитать полные обозначения вида 18-06.2
     parts = value.replace("/", "-").split("-")
     score += len(parts) * 15
     if block_name.upper().startswith("U"):
@@ -239,10 +242,16 @@ def derive_base_designation(value: str) -> Optional[str]:
 
 def _combined_product_name_from_block(cleaned_texts: list[str]) -> Optional[str]:
     ordered: list[str] = []
+    seen_lower: set[str] = set()
     for text in cleaned_texts:
         candidate = _normalize_part_type(text)
-        if _is_stamp_product_name(candidate) and candidate not in ordered:
-            ordered.append(candidate)
+        if not _is_stamp_product_name(candidate):
+            continue
+        key = candidate.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        ordered.append(candidate)
     if len(ordered) >= 2:
         return " ".join(ordered[:4])
     if ordered:

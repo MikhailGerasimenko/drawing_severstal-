@@ -22,7 +22,7 @@ def _parse_diameter_mm(normalized: str) -> float:
 
 def _parse_length_mm(normalized: str) -> float | None:
     token = normalized.replace(" ", "")
-    match = re.match(r"^L-?(\d+(?:,\d+)?)", token, re.IGNORECASE)
+    match = re.match(r"^[LH]-?(\d+(?:,\d+)?)", token, re.IGNORECASE)
     if match:
         return float(match.group(1).replace(",", "."))
     match = re.match(r"^(\d+(?:,\d+)?)(?:±|\+|-)", token)
@@ -79,16 +79,32 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
         if length_token:
             main_length = length_token["value"]
             overall["main_length"] = main_length
+    # H14 и подобные посадки/допуски не должны становиться габаритом.
+    if main_length and re.fullmatch(r"[HhНн]\d{2}", str(main_length).replace(" ", "")):
+        main_length = None
+        overall.pop("main_length", None)
 
     length_table = overall.get("length_table")
     diameter_table = overall.get("diameter_table")
     parts: list[str] = []
+    length_param = (length_table or {}).get("parameter") or "L"
 
-    if max_diameter and main_length:
+    # Таблица исполнений приоритетнее, если явной габаритной длины нет или она короче диапазона.
+    prefer_table = bool(length_table) and (
+        not main_length
+        or (
+            isinstance(length_table.get("max"), (int, float))
+            and _parse_length_mm(str(main_length).replace(" ", "")) is not None
+            and (_parse_length_mm(str(main_length).replace(" ", "")) or 0) < float(length_table["max"]) * 0.5
+        )
+    )
+
+    if max_diameter and main_length and not prefer_table:
         parts.append(f"{max_diameter} × {main_length}")
     elif max_diameter and length_table:
+        tol = f" ({length_table['tolerance']})" if length_table.get("tolerance") else ""
         parts.append(
-            f"{max_diameter} × L "
+            f"{max_diameter} × {length_param}{tol} "
             f"({length_table['min']:g}...{length_table['max']:g} мм, по исполнениям)"
         )
     elif main_length and diameter_table:
@@ -102,7 +118,7 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
         parts.append(str(main_length))
     elif length_table:
         parts.append(
-            f"L {length_table['min']:g}...{length_table['max']:g} мм (по исполнениям)"
+            f"{length_param} {length_table['min']:g}...{length_table['max']:g} мм (по исполнениям)"
         )
     elif diameter_table:
         fit = diameter_table.get("fit")
