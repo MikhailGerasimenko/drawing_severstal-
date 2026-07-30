@@ -89,15 +89,17 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
     parts: list[str] = []
     length_param = (length_table or {}).get("parameter") or "L"
 
-    # Таблица исполнений приоритетнее, если явной габаритной длины нет или она короче диапазона.
-    prefer_table = bool(length_table) and (
-        not main_length
-        or (
-            isinstance(length_table.get("max"), (int, float))
-            and _parse_length_mm(str(main_length).replace(" ", "")) is not None
-            and (_parse_length_mm(str(main_length).replace(" ", "")) or 0) < float(length_table["max"]) * 0.5
+    # Таблица исполнений приоритетнее, если явной габаритной длины нет или она из той же таблицы.
+    prefer_table = False
+    if length_table:
+        table_max = float(length_table.get("max") or 0)
+        main_mm = _parse_length_mm(str(main_length).replace(" ", "")) if main_length else None
+        prefer_table = (
+            not main_length
+            or main_mm is None
+            or (table_max and main_mm >= table_max * 0.9)
+            or (table_max and main_mm < table_max * 0.5)
         )
-    )
 
     if max_diameter and main_length and not prefer_table:
         parts.append(f"{max_diameter} × {main_length}")
@@ -131,14 +133,15 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
 
 
 def cleanup_external_contour(features: dict[str, Any]) -> None:
-    """Убрать из наружного контура длины и служебные метки."""
+    """Убрать из наружного контура служебные метки, сохранив осмысленную длину."""
     cleaned: list[dict[str, Any]] = []
     for fact in features.get("external_contour", []):
         value = str(fact.get("value", ""))
         normalized = value.replace(" ", "").lower()
         if fact.get("type") == "overall_length":
+            cleaned.append(fact)
             continue
-        if _is_length_token(normalized):
+        if _is_length_token(normalized) and fact.get("type") not in {"overall_length", "straight_section"}:
             continue
         if _is_dimension_label(normalized):
             continue

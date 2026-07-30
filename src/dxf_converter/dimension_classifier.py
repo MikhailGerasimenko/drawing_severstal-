@@ -112,11 +112,13 @@ def apply_generic_dimension_classification(
     _classify_external_shafts(features, external, classified)
     _classify_internal_holes(features, internal, classified)
     _classify_plain_diameters(features, plain, classified)
+    _classify_letter_parameters(features, available, classified, text_evidence)
     _classify_threads(features, available, classified)
-    _classify_lengths(features, available, classified)
+    _classify_lengths(features, available, classified, text_evidence)
     _classify_cone_angles(features, available, classified, text_evidence)
     _classify_fillets(features, available, classified)
     _classify_chamfers_generic(features, available, classified)
+    _classify_window_and_corner_holes(features, available, classified, text_evidence)
 
 
 def _mark(classified: set[str], *tokens: Optional[dict[str, Any]]) -> None:
@@ -311,12 +313,45 @@ def _classify_internal_holes(
 ) -> None:
     if not internal:
         return
+    outer_d = 0.0
+    for fact in features.get("external_contour", []):
+        if fact.get("type") == "outer_diameter":
+            outer_d = _parse_diameter_mm(str(fact.get("value", "")))
+            break
+
+    # H-посадка на «толстом» диаметре при наличии меньшего отверстия часто наружная ступень (втулки/вставки).
+    hole_like = [
+        token
+        for token in internal
+        if _parse_diameter_mm(token["normalized"]) < (outer_d * 0.45 if outer_d else 1e9)
+    ]
+    remaining: list[dict[str, Any]] = []
+    for token in internal:
+        diameter = _parse_diameter_mm(token["normalized"])
+        if outer_d and hole_like and diameter >= outer_d * 0.55:
+            features["external_contour"].append(
+                _fact(
+                    "external_step_diameter",
+                    token["value"],
+                    label="Наружная ступень (посадка H)",
+                    source=token["source"],
+                    confidence="medium",
+                    note="Крупный Ø с H-посадкой отнесён к наружному контуру при наличии меньшего отверстия; проверь по разрезу.",
+                )
+            )
+            _mark(classified, token)
+        else:
+            remaining.append(token)
+    internal = remaining
+    if not internal:
+        return
+
     ordered = sorted(internal, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
     main = ordered[0]
-    if not any(item.get("type") == "main_axial_hole_candidate" for item in features["internal_system"]):
+    if not any(item.get("type") in {"main_axial_hole", "main_axial_hole_candidate"} for item in features["internal_system"]):
         features["internal_system"].append(
             _fact(
-                "main_axial_hole_candidate",
+                "main_axial_hole",
                 main["value"],
                 label="Основное осевое отверстие",
                 source=main["source"],
@@ -479,26 +514,178 @@ def _classify_lengths(
     features: dict[str, Any],
     available: list[dict[str, Any]],
     classified: set[str],
+    text_evidence: list[str],
 ) -> None:
     length_tokens = [
         token
         for token in available
         if _is_length_token(token.get("normalized", ""))
     ]
-    if not length_tokens:
-        return
     scored = [(token, _parse_length_value(token["normalized"])) for token in length_tokens]
     scored = [(token, value) for token, value in scored if value is not None]
-    if not scored:
+
+    # Голые числа вроде «28» / «80» / «110» как габарит, если явная длина подозрительно мала.
+    bare_lengths: list[tuple[float, str]] = []
+    for item in text_evidence:
+        token = item.strip().replace(",", ".")
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            value = float(token)
+            if 15 <= value <= 400:
+                bare_lengths.append((value, item.strip()))
+
+    main_value = max((value for _, value in scored), default=None)
+    outer_d = 0.0
+    for fact in features.get("external_contour", []):
+        if fact.get("type") == "outer_diameter":
+            outer_d = _parse_diameter_mm(str(fact.get("value", "")))
+            break
+
+    if bare_lengths and (main_value is None or (outer_d and main_value < outer_d * 0.2)):
+        candidates = bare_lengths
+        # Для «дисковых» деталей (прижим/прокладка) высота обычно << наружного Ø.
+        if outer_d >= 40:
+            disk_like = [item for item in bare_lengths if item[0] <= outer_d * 0.5]
+            if disk_like:
+                candidates = disk_like
+        bare_best = max(candidates, key=lambda item: item[0])
+        if main_value is None or bare_best[0] > main_value * 1.5:
+            features["overall"]["main_length"] = bare_best[1]
+            features["external_contour"].append(
+                _fact(
+                    "overall_length",
+                    bare_best[1],
+                    label="Габаритная длина / высота",
+                    source={"type": "text", "raw": bare_best[1]},
+                    confidence="medium",
+                    note="Взято из таблицы/текста как наибольшая правдоподобная длина.",
+                )
+            )
+
+    if scored:
+        main = max(scored, key=lambda item: item[1])[0]
+        if "main_length" not in features["overall"]:
+            features["overall"]["main_length"] = main["value"]
+        # Длина относится к наружному контуру.
+        if not any(item.get("type") == "overall_length" for item in features["external_contour"]):
+            features["external_contour"].append(
+                _fact(
+                    "overall_length",
+                    main["value"],
+                    label="Габаритная длина",
+                    source=main["source"],
+                    confidence="medium",
+                )
+            )
         for token in length_tokens:
             _mark(classified, token)
+    elif length_tokens:
+        for token in length_tokens:
+            _mark(classified, token)
+
+
+def _classify_letter_parameters(
+    features: dict[str, Any],
+    available: list[dict[str, Any]],
+    classified: set[str],
+    text_evidence: list[str],
+) -> None:
+    for token in available:
+        normalized = token.get("normalized", "")
+        if re.match(r"^b-?\d", normalized, re.IGNORECASE):
+            features["external_contour"].append(
+                _fact(
+                    "straight_section",
+                    token["value"],
+                    label="Прямой участок b",
+                    source=token["source"],
+                    confidence="medium",
+                    note="Параметр b из таблицы/размера; указать по исполнениям.",
+                )
+            )
+            features.setdefault("gdt", []).append(
+                _fact(
+                    "coaxiality_hint",
+                    {"feature": token["value"], "base_hint": "A", "tolerance_mm_hint": "0,1"},
+                    label="Соосность участка b относительно базы А",
+                    source=token["source"],
+                    confidence="low",
+                    note="Если на чертеже есть допуск соосности для b — формулируй как отклонение от соосности плоскостей b относительно базы А (Ø наружный), не как биение отверстия.",
+                )
+            )
+            _mark(classified, token)
+
+    for item in text_evidence:
+        if re.fullmatch(r"b-0[,.]2", item.strip(), re.IGNORECASE):
+            if not any(fact.get("type") == "straight_section" for fact in features["external_contour"]):
+                features["external_contour"].append(
+                    _fact(
+                        "straight_section",
+                        item.strip(),
+                        label="Прямой участок b",
+                        source={"type": "text", "raw": item},
+                        confidence="medium",
+                    )
+                )
+
+
+def _classify_window_and_corner_holes(
+    features: dict[str, Any],
+    available: list[dict[str, Any]],
+    classified: set[str],
+    text_evidence: list[str],
+) -> None:
+    has_window = any(re.fullmatch(r"[hB]\+0[,.]1", item.strip(), re.IGNORECASE) for item in text_evidence)
+    if not has_window:
         return
-    # Не брать H14/IT14 и прочий мусор: только валидно распарсенные длины.
-    main = max(scored, key=lambda item: item[1])[0]
-    if "main_length" not in features["overall"]:
-        features["overall"]["main_length"] = main["value"]
-    for token in length_tokens:
-        _mark(classified, token)
+
+    features["internal_system"].append(
+        _fact(
+            "rectangular_window",
+            {
+                "parameters": ["h+0,1", "B+0,1"],
+                "note": "Прямоугольное окно по таблице исполнений",
+            },
+            label="Прямоугольное внутреннее окно",
+            source={"type": "text", "raw": "h+0,1 / B+0,1"},
+            confidence="high",
+            note="Опиши окно h/B по таблице; R в углах и фаски торца относи к окну.",
+        )
+    )
+    features["llm_interpretation_rules"].append(
+        "При наличии h+0,1/B+0,1 внутренняя система — прямоугольное окно, а не осевое круглое отверстие."
+    )
+
+    # Мелкие Ø8,5 с 90° — угловые глухие отверстия (спецэлементы), не основное отверстие.
+    small_holes = [
+        token
+        for token in available
+        if _is_diameter_token(token) and 6 <= _parse_diameter_mm(token["normalized"]) <= 12
+    ]
+    if small_holes:
+        # Убрать ошибочно назначенное основное отверстие, если это мелкий Ø.
+        features["internal_system"] = [
+            fact
+            for fact in features["internal_system"]
+            if not (
+                fact.get("type") in {"main_axial_hole", "main_axial_hole_candidate", "counterbore_or_stepped_hole"}
+                and _parse_diameter_mm(str(fact.get("value", ""))) <= 12
+            )
+        ]
+        features["special_elements"].append(
+            _fact(
+                "corner_blind_holes",
+                {
+                    "diameter": small_holes[0]["value"],
+                    "quantity_hint": 2,
+                    "angle": "90°",
+                },
+                label="Угловые глухие отверстия",
+                source=small_holes[0]["source"],
+                confidence="medium",
+                note="2 глухих угловых отверстия; расстояние от торца буртика уточни по чертежу.",
+            )
+        )
+        _mark(classified, *small_holes[:2])
 
 
 def _classify_cone_angles(
@@ -563,12 +750,31 @@ def _classify_fillets(
     ]
     if not fillets:
         return
-    # Крупные R рядом с отверстием/заходом — во внутреннюю систему.
-    for token in fillets[:4]:
+    outer_d = 0.0
+    for fact in features.get("external_contour", []):
+        if fact.get("type") == "outer_diameter":
+            outer_d = _parse_diameter_mm(str(fact.get("value", "")))
+            break
+
+    for token in fillets[:6]:
         if token["normalized"].lower() in classified:
             continue
         radius = float(re.sub(r"[^\d,]", "", token["normalized"]).replace(",", ".") or "0")
-        if radius >= 5 or features["internal_system"]:
+        # Мусор размерных блоков: R34/R52 на детали Ø45…80.
+        if radius >= 12 and (not outer_d or radius >= outer_d * 0.25):
+            _mark(classified, token)
+            continue
+        if radius >= 4:
+            features["external_contour"].append(
+                _fact(
+                    "fillet_or_blend",
+                    token["value"],
+                    label="Галтель / скругление наружного контура",
+                    source=token["source"],
+                    confidence="medium",
+                )
+            )
+        elif features["internal_system"]:
             features["internal_system"].append(
                 _fact(
                     "fillet_or_blend",
@@ -604,15 +810,24 @@ def _classify_chamfers_generic(
     if not chamfers:
         return
     values = [token["value"] for token in chamfers[:8]]
-    # Фаски — часть контура, не отдельный «спецэлемент», если нет других спецпризнаков.
-    features["external_contour"].append(
+    # Крупная фаска 6×45° на прижимах/окнах чаще внутренняя.
+    large_internal = any(
+        re.match(r"^[6-9](?:[,.]\d+)?×45", token["normalized"].replace(" ", ""), re.IGNORECASE)
+        for token in chamfers
+    )
+    target = "internal_system" if large_internal else "external_contour"
+    label = "Фаски внутренней системы" if large_internal else "Фаски наружного контура"
+    features[target].append(
         _fact(
             "chamfers",
             values,
-            label="Фаски наружного контура",
+            label=label,
             source=chamfers[0]["source"],
             confidence="medium",
-            note="Укажи количество и принадлежность к Ø (наружный/отверстие) по чертежу; не выноси в спецэлементы без необходимости.",
+            note=(
+                "Укажи количество (часто 2 на торцах) и принадлежность к Ø; "
+                "не выноси в спецэлементы без отдельной группы отверстий/пазов."
+            ),
         )
     )
     _mark(classified, *chamfers)

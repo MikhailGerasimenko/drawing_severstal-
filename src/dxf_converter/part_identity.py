@@ -262,11 +262,15 @@ def _combined_product_name_from_block(cleaned_texts: list[str]) -> Optional[str]
 def extract_designation_from_stamp(blocks: list[dict[str, Any]]) -> Optional[tuple[str, str]]:
     """Извлечь обозначение изделия из блока штампа (основной надписи)."""
     best: Optional[tuple[str, str, int]] = None
+    # Кандидаты по блокам с наибольшим числом штамповых маркеров (основная надпись vs таблица исполнений).
+    ranked_blocks: list[tuple[int, str, list[str], set[str]]] = []
 
     for block, cleaned_texts, marker_hits, has_product in _iter_stamp_blocks(blocks):
         name = str(block.get("name") or "")
         candidates = _designation_candidates_from_texts(cleaned_texts)
-
+        if not candidates:
+            continue
+        ranked_blocks.append((marker_hits, name, cleaned_texts, candidates))
         for candidate in candidates:
             score = _designation_score(
                 candidate,
@@ -275,16 +279,39 @@ def extract_designation_from_stamp(blocks: list[dict[str, Any]]) -> Optional[tup
                 has_product_name=has_product,
                 near_label=_near_designation_label(cleaned_texts, candidate),
             )
+            # Базовое обозначение из «богатого» штампа предпочтительнее строк таблицы -01/-02.
+            if re.fullmatch(r"\d{1,4}-\d{1,4}", candidate) and marker_hits >= 3:
+                score += 40
             evidence = f"dxf_stamp:block:{name}"
             if best is None or score > best[2]:
                 best = (candidate, evidence, score)
 
     if best:
         value, evidence, _score = best
+        # Если выбрано исполнение -01/-02, но в штампе с большим числом маркеров есть база — взять базу.
+        base_from_rich = _base_designation_from_rich_stamp(ranked_blocks)
+        if base_from_rich and value.startswith(base_from_rich + "-"):
+            return base_from_rich, f"{evidence}:base_from_rich_stamp"
         base = derive_base_designation(value)
         if base:
             return base, f"{evidence}:base"
         return value, evidence
+    return None
+
+
+def _base_designation_from_rich_stamp(
+    ranked_blocks: list[tuple[int, str, list[str], set[str]]],
+) -> Optional[str]:
+    if not ranked_blocks:
+        return None
+    ranked_blocks = sorted(ranked_blocks, key=lambda item: item[0], reverse=True)
+    top_hits = ranked_blocks[0][0]
+    for marker_hits, _name, _texts, candidates in ranked_blocks:
+        if marker_hits < max(3, top_hits):
+            continue
+        bases = [item for item in candidates if re.fullmatch(r"\d{1,4}-\d{1,4}", item)]
+        if bases:
+            return sorted(bases, key=len)[0]
     return None
 
 

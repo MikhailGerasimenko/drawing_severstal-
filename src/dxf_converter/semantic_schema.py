@@ -40,9 +40,11 @@ DIMENSION_TOKEN_RE = re.compile(
             r"\bR\s*\d+(?:[,.]\d+)?\b",
             r"\bRa\s*\d+(?:[,.]\d+)?\b",
             r"\b\d+(?:[,.]\d+)?\s*[xх×]\s*\d+(?:[,.]\d+)?\s*°\b",
-            r"\b\d+(?:[,.]\d+)?\s*°(?:\s*±\s*\d+(?:[,.]\d+)?(?:['′]|°)?)?",
+            r"\b\d+(?:[,.]\d+)?\s*°(?:\s*±\s*\d+(?:[,.]\d+)?(?:['′]|°)?)?(?:\s*\d+['′])?",
+            r"\b\d+\s*°\s*\d+\s*['′]",
             r"\bIT\d+(?:/2)?\b",
             r"\bM\d+(?:[,.]\d+)?(?:-\d+[A-Za-z])?\b",
+            r"\bb\s*-?\s*\d+(?:[,.]\d+)?\b",
         ]
     ),
     re.IGNORECASE,
@@ -464,6 +466,9 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
         filtered = [value for value in values if value >= max(8.0, values[-1] * 0.05)]
         if filtered:
             values = filtered
+    # Длина заходного конуса 10 мм часто попадает в таблицу L — убрать одиночный мелкий выброс.
+    if len(values) >= 3 and values[0] <= 12 and values[1] >= values[0] * 5:
+        values = values[1:]
     parameter = "H" if has_h_marker and not has_l_marker else "L"
     tolerance = ""
     if any(re.search(r"[LlHhНн]\s*-?\s*0[,.]05", item) for item in text_evidence):
@@ -661,6 +666,50 @@ def _build_engineering_features(
                     note="D* берётся из таблицы исполнений вместе с углом конуса.",
                 )
             )
+        # Длина H из таблицы исполнений (часто без явной подписи «H» рядом с каждым числом).
+        h_candidates = []
+        for item in text_evidence:
+            token = item.strip().replace(",", ".")
+            if re.fullmatch(r"\d+(?:\.\d+)?", token):
+                value = float(token)
+                if 20 <= value <= 80:
+                    h_candidates.append(value)
+        if h_candidates and "length_table" not in features["overall"]:
+            values = sorted(set(h_candidates))
+            features["overall"]["length_table"] = {
+                "parameter": "H",
+                "tolerance": "",
+                "min": values[0],
+                "max": values[-1],
+                "values": values[:40],
+                "source": "variable_execution_inferred",
+                "confidence": "low",
+            }
+            features["llm_interpretation_rules"].append(
+                "Габаритная длина — параметр H по таблице исполнений (буквенное обозначение, без подмены номером чертежа)."
+            )
+        if any("режущ" in item.lower() or "кромк" in item.lower() for item in text_evidence):
+            features["technical_requirements"].append(
+                _fact(
+                    "cutting_edge_note",
+                    "Режущая кромка (уточни торец по чертежу)",
+                    label="Режущая кромка",
+                    source=_source("tech_note"),
+                    confidence="medium",
+                    note="Укажи в примечаниях наличие режущей кромки.",
+                )
+            )
+        elif any("втулка" in item.lower() and "отрезная" in item.lower() for item in text_evidence):
+            features["technical_requirements"].append(
+                _fact(
+                    "cutting_edge_note",
+                    "Режущая кромка с правого торца (от отверстия к торцу)",
+                    label="Режущая кромка",
+                    source=_source("tech_note"),
+                    confidence="medium",
+                    note="Для отрезной втулки укажи режущую кромку в примечаниях.",
+                )
+            )
 
     axial = _first_token(tokens, r"^Ø11(?:\(|$)")
     if axial:
@@ -752,18 +801,24 @@ def _build_engineering_features(
         _mark_classified(classified, keyway, keyway_depth)
 
     chamfers = _token_matches(tokens, r"^\d+(?:[,.]\d+)?×45°?$")
-    if chamfers:
+    # Крупные фаски (6×45°) классифицирует generic classifier во внутреннюю систему.
+    small_chamfers = [
+        token
+        for token in chamfers
+        if not re.match(r"^[6-9]", token["normalized"])
+    ]
+    if small_chamfers:
         features["external_contour"].append(
             _fact(
                 "chamfers",
-                [token["value"] for token in chamfers],
+                [token["value"] for token in small_chamfers],
                 label="Фаски наружного контура",
-                source=chamfers[0]["source"],
+                source=small_chamfers[0]["source"],
                 confidence="medium",
-                note="Укажи количество и принадлежность к наружному Ø / отверстию; не выноси в спецэлементы без необходимости.",
+                note="Укажи количество (часто 2) и принадлежность к наружному Ø / отверстию.",
             )
         )
-        _mark_classified(classified, *chamfers)
+        _mark_classified(classified, *small_chamfers)
 
     l_tolerance = _first_token(tokens, r"^[LH]-0[,.]05$")
     if l_tolerance:

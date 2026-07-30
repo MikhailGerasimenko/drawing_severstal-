@@ -47,14 +47,18 @@ def test_feedback_54_24_hole_tolerance_and_no_fake_specials():
     # Не перепутать с 54-247
     dxf = next(path for path in FEEDBACK_DIR.glob("54-24*.dxf") if "247" not in path.name)
     semantic = build_semantic_passport_json(parse_dxf(dxf))
-    assert "80f7" in semantic.overall_dimensions.value
-    assert "L" in semantic.overall_dimensions.value
+    overall = semantic.overall_dimensions.value or ""
+    assert "80f7" in overall
+    assert "103" in overall or "L" in overall
     int_values = " ".join(str(item.get("value")) for item in semantic.engineering_features["internal_system"])
     assert "+0,1" in int_values or "+0.1" in int_values
     assert not any(
         item.get("type") == "groove_detail_candidates"
         for item in semantic.engineering_features["special_elements"]
     )
+    gdt_vals = " ".join(str(item.get("value")) for item in semantic.engineering_features.get("gdt", []))
+    assert "0,17" not in gdt_vals
+    assert "'0,1'" not in gdt_vals and '"0,1"' not in gdt_vals
 
 
 def test_feedback_55_136_height_table_and_hole():

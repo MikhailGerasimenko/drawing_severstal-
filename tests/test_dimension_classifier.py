@@ -40,15 +40,20 @@ def test_generic_classification_puts_c11_to_external_contour():
     assert any(item.get("type") == "thread" for item in features["special_elements"])
 
 
-def test_length_not_added_to_external_contour():
+def test_length_not_added_as_outer_diameter():
     features = {
         "overall": {},
         "external_contour": [],
         "internal_system": [],
         "special_elements": [],
+        "llm_interpretation_rules": [],
     }
     classified: set[str] = set()
     tokens = [_token("∅30s7(+0,056+0,035)"), _token("60-0,5")]
     apply_generic_dimension_classification(features, tokens, classified, [])
     assert features["overall"].get("main_length") == "60-0,5"
-    assert all("60" not in str(item.get("value")) for item in features["external_contour"])
+    # Длина может быть в external_contour как overall_length, но не как outer_diameter.
+    assert all(
+        item.get("type") != "outer_diameter" or "60" not in str(item.get("value"))
+        for item in features["external_contour"]
+    )

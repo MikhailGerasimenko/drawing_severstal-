@@ -15,7 +15,9 @@ GENERAL_TOLERANCE_RE = re.compile(
     re.IGNORECASE,
 )
 STANDALONE_FORM_TOLERANCE_RE = re.compile(r"^0[,.]\d{1,3}$")
-COMMON_GDT_TOLERANCE_MM = {0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.2}
+COMMON_GDT_TOLERANCE_MM = {0.01, 0.02, 0.03, 0.05}
+# 0,1 / 0,17 часто из таблиц допусков, не из рамок ГДТ — не поднимать без повторов.
+WEAK_GDT_TOLERANCE_MM = {0.1, 0.17, 0.2}
 OUTER_DIAMETER_RE = re.compile(
     r"[Ø∅]\s*(\d+(?:[,.]\d+)?)\s*([a-zA-Zа-яА-Я]\d+)?",
     re.IGNORECASE,
@@ -105,7 +107,9 @@ def _collect_form_tolerance_values(text_evidence: list[str]) -> list[tuple[str, 
         if decimal is None:
             continue
         rounded = round(decimal, 3)
-        if count >= 2 or rounded in COMMON_GDT_TOLERANCE_MM:
+        if rounded in WEAK_GDT_TOLERANCE_MM:
+            continue
+        if rounded in COMMON_GDT_TOLERANCE_MM or count >= 2:
             results.append((value, sources[value]))
     return results
 
@@ -199,22 +203,30 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
     form_tolerances = _collect_form_tolerance_values(text_evidence)
     outer_diams = _collect_outer_diameters_for_runout(text_evidence)
     for value, source_text in form_tolerances:
-        if outer_diams:
-            target = outer_diams[0]
-            line = f"Допуск формы (кандидат): не более {value} мм (возможно биение {target})"
-        else:
-            line = f"Допуск формы (кандидат): не более {value} мм"
+        related = outer_diams[:3]
+        line = f"Биение относительно базы А: не более {value} мм"
+        if related:
+            line += f" (связанные поверхности: {', '.join(related)})"
         add_fact_line(line)
         features.append(
             _fact(
                 "form_tolerance",
-                {"tolerance_mm": value, "related_geometry": outer_diams[:3], "base_hint": "A"},
-                label="Допуск формы / биение",
+                {
+                    "tolerance_mm": value,
+                    "related_geometry": related,
+                    "base_hint": "A",
+                    "formulation_hint": (
+                        "Полное радиальное и/или торцевое биение относительно базы А "
+                        "(уточни тип по стрелкам/символу на чертеже)."
+                    ),
+                },
+                label="Допуск формы / биение относительно базы А",
                 source=_source(source_text),
-                confidence="medium" if outer_diams else "low",
+                confidence="medium" if related else "low",
                 note=(
-                    "Число из рамки ГДТ. В паспорте формулируй как биение относительно базы А "
-                    "(радиальное/торцевое — по символу на чертеже), не оставляй только «0,0x мм»."
+                    "Формулируй в паспорте явно: "
+                    "«полное радиальное/торцевое биение … относительно базы А … не более N мм». "
+                    "Не выводи сырое число без типа биения и базы."
                 ),
             )
         )
