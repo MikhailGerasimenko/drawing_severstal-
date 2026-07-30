@@ -1,4 +1,4 @@
-from dxf_converter.dimension_classifier import (
+from app.converter.dimension_classifier import (
     INTERNAL_FIT_RE,
     SHAFT_FIT_RE,
     _has_internal_fit,

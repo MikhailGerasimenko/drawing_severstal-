@@ -1,91 +1,72 @@
 # DXF Converter
 
-Микросервис и CLI для конвертации инженерных чертежей **DXF** в три артефакта:
+Микросервис конвертации чертежей DXF в PNG, normalized JSON и LLM Markdown-контекст для генерации паспорта изделия.
 
-1. **PNG** — визуальное превью чертежа  
-2. **JSON** — нормализованные факты чертежа (размеры, семантика, audit)  
-3. **Markdown** — компактный **LLM Engineering Context** для n8n / Gemini / Qwen  
+Каркас — корпоративный FastAPI Template (Poetry, Gunicorn, OpenTelemetry, Helm, GitLab CI).
+
+## Структура
 
 ```
-DXF ──► [Converter] ──►  drawing.png      (файл)
-                      ├── drawing.json    (файл)
-                      └── llm_context     (текст в ответе API / stdout в CLI)
+app/
+  main.py                 # FastAPI entrypoint
+  core/                   # config, middleware, handlers, exceptions
+  api/v1/                 # /api/v1 health, convert, artifacts
+  converter/              # DXF parse → semantic → PNG/JSON/llm_context
+config/gunicorn_conf.py
+.helm/                    # Kubernetes chart
+.gitlab-ci.yml
 ```
 
-## Быстрый старт (CLI)
+## API
+
+| Method | Path | Описание |
+|--------|------|----------|
+| GET | `/api/v1/health` | Health check |
+| POST | `/api/v1/convert` | Multipart DXF → `BaseResponse[ConvertData]` |
+| GET | `/api/v1/jobs/{job_id}` | Список артефактов |
+| GET | `/api/v1/artifacts/{job_id}/{filename}` | Скачивание файла |
+
+Успешный ответ convert:
+
+```json
+{
+  "request_id": "...",
+  "timestamp": "...",
+  "data": {
+    "job_id": "...",
+    "llm_context": "# LLM Engineering Context\\n...",
+    "validation_gate": {"status": "pass", "ready_for_llm": true, "errors": [], "warnings": []},
+    "files": {"json": "...", "png": "..."},
+    "download_urls": {"json": "...", "png": "..."}
+  }
+}
+```
+
+Подробнее: [API.md](API.md). Системный промпт для LLM: `docs/system_prompt_passport_markdown.md`.
+
+## Локальный запуск
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+poetry install --no-root --with dev
+make run
+# либо
+poetry run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-python main.py \
-  --dxf "samples/42-2 - Штифтодержатель.dxf" \
-  --name "42-2" \
-  --out-dir output
+# CLI
+python -m app.converter.cli --dxf samples/some.dxf --out-dir output --skip-png
+python -m app.converter.cli --serve
 ```
 
-Результат:
-
-- `output/42-2.png`, `output/42-2.json` — файлы
-- **LLM Markdown** — текст в **stdout** (пути JSON/PNG — в stderr)
-
-Сохранить Markdown в файл: `--llm-out output/42-2_llm_context.md`
-
-## HTTP API (микросервис)
+## Тесты
 
 ```bash
-python main.py --serve --host 0.0.0.0 --port 8000
+pytest tests/ -q
 ```
 
-- Swagger UI: http://localhost:8000/docs  
-- ReDoc: http://localhost:8000/redoc  
-- Документация для коллег: **[API.md](./API.md)** — эндпоинты, ветки **PNG** и **LLM Markdown**, сценарии n8n
-- Системный промпт для n8n: **[docs/system_prompt_passport_markdown.md](./docs/system_prompt_passport_markdown.md)**
+DXF в `samples/` опциональны — связанные тесты делают `skip`, если файлов нет.
 
-> **Для интеграторов:** можно загружать DXF как `drawing.dxf` — обозначение и тип детали извлекаются из **штампа внутри файла**, не из имени.
+## Docker / Helm
 
-### Docker
-
-```bash
-docker compose up --build
-```
-
-Сервис слушает порт **8000**, артефакты сохраняются в volume `converter-artifacts`.
-
-## Структура проекта
-
-```
-├── main.py                 # CLI и точка входа API
-├── requirements.txt
-├── Dockerfile
-├── docker-compose.yml
-├── API.md                  # Документация REST для коллег
-├── samples/                # Примеры DXF
-├── eval/golden/            # Эталонные пары DXF + паспорт (см. README внутри)
-├── output/                 # Результаты CLI (gitignore, не коммитить)
-└── src/dxf_converter/
-    ├── api.py              # FastAPI микросервис
-    ├── workflow.py         # Оркестрация конвертации
-    ├── dxf_parser.py       # Парсинг DXF → summary
-    ├── semantic_schema.py  # Summary → normalized JSON + классификация
-    ├── markdown_context.py # JSON → LLM Markdown
-    └── rendering.py        # DXF → PNG (ezdxf / LibreCAD)
-```
-
-## Параметры рендера PNG
-
-| Параметр | По умолчанию | Описание |
-|----------|--------------|----------|
-| `--png-dpi` | 300 | Разрешение превью |
-| `--dxf-text-policy` | filling | Режим отрисовки текста |
-| `--dxf-render-backend` | classic | `classic` (ezdxf), `librecad`, `auto` |
-| `--skip-png` | — | Только JSON + Markdown |
-
-## Интеграция с n8n
-
-1. `POST /v1/convert` — загрузить DXF, получить `download_urls.llm_context_md`  
-2. Скачать Markdown или передать URL в LLM-ноду  
-3. Использовать промпт «паспорт изделия» поверх `*_llm_context.md`  
-
-Подробные примеры `curl` — в [API.md](./API.md).
+- `Dockerfile` — corp Python image, OTEL via `opentelemetry-instrument`
+- Healthcheck: `GET /api/v1/health`
+- `.helm/` — стандартный chart контура

@@ -1,15 +1,60 @@
-.venv/
+# Python
 __pycache__/
-**/__pycache__/
-*.pyc
-.DS_Store
-**/.DS_Store
-.matplotlib-cache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+.venv*/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage / caches
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+.hypothesis/
+.pytest_cache/
+.matplotlib-cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env
 .env
+.env.*
+!.env.example
+
+# Runtime artifacts
 output/
 data/
-eval/runs/
-
-# OpenRouter / секреты
-.env

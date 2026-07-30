@@ -1,7 +1,0 @@
-ezdxf
-matplotlib
-fastapi
-uvicorn[standard]
-python-multipart
-pytest
-httpx

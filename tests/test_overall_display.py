@@ -1,4 +1,4 @@
-from dxf_converter.overall_display import finalize_overall_display, filter_critical_unclassified
+from app.converter.overall_display import finalize_overall_display, filter_critical_unclassified
 
 
 def test_finalize_overall_display_max_diameter_and_length():

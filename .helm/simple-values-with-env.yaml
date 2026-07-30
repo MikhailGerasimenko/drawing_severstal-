@@ -1,0 +1,35 @@
+fullnameOverride: "$CI_PROJECT_NAME_SLUG"
+
+global:
+  image:
+    repository: docker.repo.severstal.severstalgroup.com/$CI_PROJECT_PATH
+    tag: 1.13
+
+secrets:
+  enabled: true
+  projectNamespace: "$CI_PROJECT_NAMESPACE"
+  backend: "eso-vault-backend"
+
+deployment:
+  replicas: 1
+  reloadOnChange:
+    enabled: true
+
+service:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+
+ingress:
+  -
+    className: nginx
+    hosts:
+    - host: generic-app.severstal.com
+      paths:
+        - path: /
+          port: 8000
+      tls:
+        common: true

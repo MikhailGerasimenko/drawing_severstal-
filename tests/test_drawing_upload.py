@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from dxf_converter.input_router import load_dxf
-from dxf_converter.part_identity import is_gost_reference, pick_designation
+from app.converter.input_router import load_dxf
+from app.converter.part_identity import is_gost_reference, pick_designation
 
 SAMPLES_DIR = Path(__file__).resolve().parents[1] / "samples"
 
