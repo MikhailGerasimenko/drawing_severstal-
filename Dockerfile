@@ -29,16 +29,18 @@ ARG POETRY_VERSION=2.2.1
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir --retries 15 --timeout 120 "poetry==${POETRY_VERSION}" && \
-    poetry config virtualenvs.create false && \
-    apt-get purge -y build-essential libffi-dev libssl-dev && \
-    rm -rf /var/lib/apt/lists/*
+    poetry config virtualenvs.create false
 
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock README.md ./
 
+# Install app deps while build toolchain is still present (numpy/matplotlib/pillow wheels/sdists).
 RUN poetry install --no-root --no-interaction --without dev && \
-    pip uninstall -y poetry
+    pip uninstall -y poetry && \
+    apt-get purge -y build-essential libffi-dev libssl-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 
 # Runtime stage
@@ -57,7 +59,9 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     apt-get install -y --no-install-recommends \
     curl \
     fonts-dejavu-core \
-    libfreetype6 && \
+    fontconfig \
+    libfreetype6 \
+    libpng16-16 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
