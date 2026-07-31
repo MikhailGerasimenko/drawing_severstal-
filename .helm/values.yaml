@@ -284,13 +284,13 @@ ingress:
   tlsEnabled: false
   className: nginx
   annotations: {}
-  host: fastapi-template-dev.kube.severstal.severstalgroup.com
+  host: dxf-converter-dev.kube.severstal.severstalgroup.com
   paths:
     - path: /
-      serviceName: fastapi-template
+      serviceName: dxf-converter
       port: 8000
   tls:
-    secretName: fastapi-template
+    secretName: dxf-converter
 
 # -- Create PVC
 pvc: {}

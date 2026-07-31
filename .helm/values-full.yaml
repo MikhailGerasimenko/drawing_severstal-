@@ -8,7 +8,7 @@ env: dev
 
 global:
   image:
-    repository: docker.repo.severstal.severstalgroup.com/sales-and-supply/templates-sss-v3/python/fastapi-template
+    repository: docker.repo.severstal.severstalgroup.com/vibecoders/digital-process-engineer/dxf-converter
     tag: "1.0.0"
 
   # -- Container registry credentials
