@@ -1,4 +1,3 @@
-import multiprocessing
 import os
 
 # Server socket
@@ -6,11 +5,16 @@ bind = f"0.0.0.0:{os.getenv('PORT', '8000')}"
 backlog = 2048
 
 # Worker processes
-workers = multiprocessing.cpu_count() * 2 + 1
+# Do NOT use cpu_count()*2+1 in Kubernetes: it sees node CPUs, not pod limits.
+# One worker loads matplotlib/numpy/ezdxf (~150-300Mi); keep concurrency low.
+workers = int(os.getenv("WEB_CONCURRENCY", os.getenv("WORKERS", "1")))
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
-timeout = 30
+# DXF convert + PNG can exceed the template default 30s
+timeout = int(os.getenv("GUNICORN_TIMEOUT", "120"))
 keepalive = 2
+max_requests = int(os.getenv("GUNICORN_MAX_REQUESTS", "200"))
+max_requests_jitter = int(os.getenv("GUNICORN_MAX_REQUESTS_JITTER", "50"))
 
 # Logging
 accesslog = "-"
@@ -21,7 +25,7 @@ access_log_format = (
 )
 
 # Process naming
-proc_name = "fastapi-template"
+proc_name = "dxf-converter"
 
 # Server mechanics
 daemon = False
@@ -30,7 +34,3 @@ umask = 0
 user = None
 group = None
 tmp_upload_dir = None
-
-# SSL (if needed)
-# keyfile = None
-# certfile = None

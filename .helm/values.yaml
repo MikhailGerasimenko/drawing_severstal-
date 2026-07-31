@@ -165,11 +165,12 @@ deployment:
 
   resources:
     limits:
-      memory: 512Mi
+      # matplotlib/numpy per worker; keep WEB_CONCURRENCY=1 with this budget
+      memory: 1Gi
       cpu: 1
     requests:
-      memory: 128Mi
-      cpu: 0.1
+      memory: 512Mi
+      cpu: 0.2
 
   probes:
     livenessProbe:
