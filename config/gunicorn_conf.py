@@ -5,9 +5,9 @@ bind = f"0.0.0.0:{os.getenv('PORT', '8000')}"
 backlog = 2048
 
 # Worker processes
-# Do NOT use cpu_count()*2+1 in Kubernetes: it sees node CPUs, not pod limits.
-# One worker loads matplotlib/numpy/ezdxf (~150-300Mi); keep concurrency low.
-workers = int(os.getenv("WEB_CONCURRENCY", os.getenv("WORKERS", "1")))
+# Ignore platform WEB_CONCURRENCY (often set from node CPU count).
+# Override only via DXF_GUNICORN_WORKERS if you really need more workers + RAM.
+workers = int(os.getenv("DXF_GUNICORN_WORKERS", "1"))
 worker_class = "uvicorn.workers.UvicornWorker"
 worker_connections = 1000
 # DXF convert + PNG can exceed the template default 30s

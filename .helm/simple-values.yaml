@@ -1,7 +1,7 @@
 global:
   image:
-    repository: docker.repo.severstal.severstalgroup.com/sales-and-supply/templates-sss-v3/python/fastapi-template
-    tag: 1.13
+    repository: docker.repo.severstal.severstalgroup.com/vibecoders/digital-process-engineer/dxf-converter
+    tag: dev
 
 secrets:
   enabled: true

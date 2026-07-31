@@ -89,5 +89,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/api/v1/health || exit 1
 
-# Zero-code tracing: opentelemetry-instrument wraps the server and exports via OTLP.
-CMD ["opentelemetry-instrument", "gunicorn", "app.main:app", "-c", "config/gunicorn_conf.py"]
+# Force a single worker even if the platform injects WEB_CONCURRENCY.
+CMD ["opentelemetry-instrument", "gunicorn", "app.main:app", "-c", "config/gunicorn_conf.py", "--workers", "1"]
