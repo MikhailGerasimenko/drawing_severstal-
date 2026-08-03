@@ -1,6 +1,8 @@
+fullnameOverride: "$CI_PROJECT_NAME_SLUG"
+
 global:
   image:
-    repository: docker.repo.severstal.severstalgroup.com/vibecoders/digital-process-engineer/dxf-converter
+    repository: docker.repo.severstal.severstalgroup.com/$CI_PROJECT_PATH
     tag: dev
 
 secrets:
@@ -8,7 +10,7 @@ secrets:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-5"
-  projectNamespace: "sales-and-supply/templates-sss-v3/python"
+  projectNamespace: "$CI_PROJECT_NAMESPACE"
   backend: "eso-vault-backend"
   files: {}
 
@@ -16,9 +18,21 @@ deployment:
   replicas: 1
   reloadOnChange:
     enabled: true
+  env:
+  - name: DXF_GUNICORN_WORKERS
+    value: "1"
+  - name: GUNICORN_TIMEOUT
+    value: "120"
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: 1
+    requests:
+      memory: 512Mi
+      cpu: 0.2
   tolerations:
   - key: "client-cluster"
-    operator: "Equal"
+    operator: "equal"
     value: "sales-supply"
     effect: "NoSchedule"
 

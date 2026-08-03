@@ -6,11 +6,13 @@ fullnameOverride: ""
 
 env: dev
 
+fullnameOverride: "$CI_PROJECT_NAME_SLUG"
+
 global:
   image:
-    # Must be THIS service image from CI, not the FastAPI template.
-    # Confirm exact path in GitLab → Deploy → Container Registry.
-    repository: docker.repo.severstal.severstalgroup.com/vibecoders/digital-process-engineer/dxf-converter
+    # CI подставляет реальный образ (как в backend-master / simple-values-with-env).
+    # Не хардкодить fastapi-template и не угадывать путь вручную.
+    repository: docker.repo.severstal.severstalgroup.com/$CI_PROJECT_PATH
     tag: "dev"
 
   # -- Container registry credentials
@@ -29,7 +31,7 @@ secrets:
   # -- External secrets backend name
   backend: "eso-vault-backend"
 
-  projectNamespace: "sales-and-supply/templates-sss-v3/python"
+  projectNamespace: "$CI_PROJECT_NAMESPACE"
 
   refreshInterval: 30m
 
@@ -93,7 +95,7 @@ deployment:
 
   # -- Fixed Environment variable
   env:
-  - name: WEB_CONCURRENCY
+  - name: DXF_GUNICORN_WORKERS
     value: "1"
   - name: GUNICORN_TIMEOUT
     value: "120"
@@ -284,13 +286,13 @@ ingress:
   tlsEnabled: false
   className: nginx
   annotations: {}
-  host: dxf-converter-dev.kube.severstal.severstalgroup.com
+  host: "$CI_PROJECT_NAME_SLUG-dev.kube.severstal.severstalgroup.com"
   paths:
     - path: /
-      serviceName: dxf-converter
+      serviceName: "$CI_PROJECT_NAME_SLUG"
       port: 8000
   tls:
-    secretName: dxf-converter
+    secretName: "$CI_PROJECT_NAME_SLUG"
 
 # -- Create PVC
 pvc: {}
