@@ -99,6 +99,8 @@ def convert_dxf(
             letter_spacing=dxf_letter_spacing,
             backend=dxf_render_backend,
         )
+        if not png_path.is_file() or png_path.stat().st_size <= 0:
+            raise RuntimeError(f"PNG не создан: {png_path}")
         if normalized.preview:
             normalized.preview.path = str(png_path)
             normalized.preview.dpi = png_dpi

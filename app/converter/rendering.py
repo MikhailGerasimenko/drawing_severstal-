@@ -5,7 +5,10 @@ import tempfile
 from pathlib import Path
 from typing import Literal, Optional
 
-os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
+# Writable cache in containers (WORKDIR may be restricted; /tmp is always ok).
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib-cache")
+os.environ.setdefault("MPLBACKEND", "Agg")
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
 import ezdxf
 from ezdxf.addons.drawing import matplotlib as ezdxf_matplotlib
