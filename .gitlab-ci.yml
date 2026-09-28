@@ -3,6 +3,14 @@ include:
     file:
       - '/python.yml'
 
-variables:
-  SKIP_PUBLISH: "true"
-  DEPLOYMENT_ENVIRONMENT: dev-2
+deploy:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+        DEPLOYMENT_ENVIRONMENT: "dev-2"
+        
+    - if: $CI_COMMIT_BRANCH =~ /^(test|stage)$/ || $CI_COMMIT_BRANCH =~ /^epic.*$/
+      variables:
+        IMAGE_TAG: "$CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA"
+        DEPLOYMENT_ENVIRONMENT: $CI_COMMIT_BRANCH

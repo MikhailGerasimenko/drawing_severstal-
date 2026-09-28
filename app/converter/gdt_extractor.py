@@ -158,6 +158,25 @@ def _collect_outer_diameters_for_runout(text_evidence: list[str]) -> list[str]:
     return diameters[:5]
 
 
+def _infer_gdt_kind(text: str) -> str:
+    lowered = text.lower()
+    if "симметрич" in lowered or "≡" in text:
+        return "symmetry"
+    if "позици" in lowered:
+        return "position"
+    if "перпенд" in lowered or "⟂" in text or "⊥" in text:
+        return "perpendicularity"
+    if "параллел" in lowered or "∥" in text or "⌅" in text:
+        return "parallelism"
+    if "соосн" in lowered or "◎" in text:
+        return "coaxiality"
+    if "плоскост" in lowered:
+        return "flatness"
+    if "биени" in lowered or "радиальн" in lowered or "торцев" in lowered:
+        return "runout"
+    return "unknown"
+
+
 def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
     """Возвращает (gdt_facts для semantic, structured facts для engineering_features)."""
     facts: list[str] = []
@@ -171,18 +190,38 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
             facts.append(normalized)
 
     for text in _collect_descriptive_gdt(text_evidence):
+        kind = _infer_gdt_kind(text)
         add_fact_line(text)
         features.append(
             _fact(
                 "gdt_note",
-                text,
+                {"text": text, "kind": kind},
                 label="Текстовая аннотация ГДТ",
                 source=_source(text),
                 confidence="high",
+                note="Тип ГДТ берётся из формулировки/символа, не из одного числа допуска.",
             )
         )
 
     ra_values = _collect_ra_values(text_evidence)
+    ra_targets: list[dict[str, str]] = []
+    for text in text_evidence:
+        match = RA_RE.search(text)
+        if not match:
+            continue
+        target = ""
+        diam = OUTER_DIAMETER_RE.search(text)
+        if diam:
+            target = f"Ø{diam.group(1)}"
+        elif re.search(r"торц|баз", text, re.I):
+            target = "face_or_datum"
+        ra_targets.append(
+            {
+                "parameter": "Ra",
+                "value": _format_decimal(match.group(1)),
+                "target_hint": target or "unbound",
+            }
+        )
     if ra_values:
         if len(ra_values) == 1:
             line = f"Шероховатость: Ra {ra_values[0]}"
@@ -192,44 +231,67 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
         features.append(
             _fact(
                 "surface_roughness",
-                [{"parameter": "Ra", "value": value} for value in ra_values],
+                ra_targets or [{"parameter": "Ra", "value": value, "target_hint": "unbound"} for value in ra_values],
                 label="Шероховатость поверхностей",
                 source=_source(line),
                 confidence="high",
-                note="Значения Ra из аннотаций. Общую Ra (правый верхний угол) укажи один раз; локальные Ra — у соответствующих поверхностей в геометрии.",
+                note="Каждое Ra храни с target_hint (Ø/торец). Общую Ra (штамп) не копировать на все контуры.",
             )
         )
 
     form_tolerances = _collect_form_tolerance_values(text_evidence)
+    if any(_infer_gdt_kind(text) == "symmetry" for text in text_evidence):
+        seen_tol = {item[0] for item in form_tolerances}
+        for text in text_evidence:
+            cleaned = text.strip().rstrip("(").strip()
+            if cleaned in seen_tol:
+                continue
+            if STANDALONE_FORM_TOLERANCE_RE.match(cleaned) and _parse_decimal(cleaned) == 0.1:
+                form_tolerances.append((cleaned, text))
+                seen_tol.add(cleaned)
     outer_diams = _collect_outer_diameters_for_runout(text_evidence)
+    descriptive_kinds = {_infer_gdt_kind(text) for text in _collect_descriptive_gdt(text_evidence)}
+    preferred_kind = next((kind for kind in ("symmetry", "position", "coaxiality") if kind in descriptive_kinds), "runout")
+    kind_labels = {
+        "symmetry": "Симметричность относительно базы А",
+        "position": "Позиционный допуск относительно базы А",
+        "coaxiality": "Соосность относительно базы А",
+        "runout": "Биение относительно базы А",
+    }
     for value, source_text in form_tolerances:
-        related = outer_diams[:3]
-        line = f"Биение относительно базы А: не более {value} мм"
-        if related:
-            line += f" (связанные поверхности: {', '.join(related)})"
-        add_fact_line(line)
-        features.append(
-            _fact(
-                "form_tolerance",
-                {
-                    "tolerance_mm": value,
-                    "related_geometry": related,
-                    "base_hint": "A",
-                    "formulation_hint": (
-                        "Полное радиальное и/или торцевое биение относительно базы А "
-                        "(уточни тип по стрелкам/символу на чертеже)."
+        kind = _infer_gdt_kind(source_text)
+        if kind == "unknown":
+            kind = preferred_kind
+        related = outer_diams[:3] or [None]
+        for target in related:
+            surfaces = [target] if target else []
+            line = f"{kind_labels.get(kind, 'Допуск формы')} : не более {value} мм"
+            if target:
+                line += f" (поверхность: {target})"
+            add_fact_line(line)
+            features.append(
+                _fact(
+                    "form_tolerance",
+                    {
+                        "kind": kind,
+                        "tolerance_mm": value,
+                        "related_geometry": surfaces,
+                        "base_hint": "A",
+                        "formulation_hint": (
+                            "Симметричность относительно базы А"
+                            if kind == "symmetry"
+                            else "Полное радиальное и/или торцевое биение относительно базы А"
+                        ),
+                    },
+                    label=kind_labels.get(kind, "Допуск формы относительно базы А"),
+                    source=_source(source_text),
+                    confidence="medium" if target else "low",
+                    note=(
+                        "Отдельный факт на каждую поверхность; 0,1 без символа биения не считать биением. "
+                        "Не объединяй две поверхности в одно требование."
                     ),
-                },
-                label="Допуск формы / биение относительно базы А",
-                source=_source(source_text),
-                confidence="medium" if related else "low",
-                note=(
-                    "Формулируй в паспорте явно: "
-                    "«полное радиальное/торцевое биение … относительно базы А … не более N мм». "
-                    "Не выводи сырое число без типа биения и базы."
-                ),
+                )
             )
-        )
 
     for value, source_text in _collect_general_tolerances(text_evidence):
         add_fact_line(f"Общие допуски: {value}")

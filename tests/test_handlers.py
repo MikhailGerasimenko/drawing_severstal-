@@ -120,8 +120,12 @@ def test_general_exception_handler(mock_logger, test_app):
     assert "timestamp" in data
     assert "error" in data
     assert data["error"]["code"] == "INTERNAL_SERVER_ERROR"
-    # Verify logger was called
+    # Verify logger was called without sensitive exception text
     mock_logger.exception.assert_called_once()
+    call_args, call_kwargs = mock_logger.exception.call_args
+    assert call_args[0] == "Unhandled exception: ValueError"
+    assert "request_id" in call_kwargs.get("extra", {})
+    assert call_kwargs["extra"]["path"] == "/general-error"
 
 
 @pytest.mark.unit

@@ -38,3 +38,16 @@ def test_convert_rejects_non_dxf(client):
     assert response.status_code == 422
     body = response.json()
     assert "error" in body
+
+
+@pytest.mark.unit
+def test_convert_rejects_invalid_token(client, monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "api_token", "secret-token")
+    response = client.post(
+        "/api/v1/convert",
+        files={"file": ("drawing.dxf", b"0\nSECTION\n", "application/octet-stream")},
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert response.status_code == 401

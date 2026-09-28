@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # Converter settings
     artifacts_dir: str = "data/artifacts"
     cors_origins: str = "*"
+    # Внутренний токен для аутентификации от backend (пусто = не требуется)
+    api_token: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -71,7 +71,7 @@ async def general_exception_handler(
     request_id = getattr(request.state, "request_id", "unknown")
 
     logger.exception(
-        f"Unhandled exception: {type(exc).__name__}: {str(exc)}",
+        f"Unhandled exception: {type(exc).__name__}",
         extra={"request_id": request_id, "path": request.url.path},
     )
 

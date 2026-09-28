@@ -40,6 +40,39 @@ def test_generic_classification_puts_c11_to_external_contour():
     assert any(item.get("type") == "thread" for item in features["special_elements"])
 
 
+def test_h7_near_max_diameter_goes_to_external_contour():
+    features = {
+        "overall": {},
+        "external_contour": [],
+        "internal_system": [],
+        "special_elements": [],
+        "llm_interpretation_rules": [],
+    }
+    classified: set[str] = set()
+    tokens = [_token("Ø47,83H7"), _token("Ø12H11"), _token("Ø8")]
+    apply_generic_dimension_classification(features, tokens, classified, [])
+    values = " ".join(str(item.get("value")) for item in features["external_contour"])
+    assert "47,83" in values.replace(".", ",") or "47.83" in values
+    internal_vals = " ".join(str(item.get("value")) for item in features["internal_system"])
+    assert "47,83" not in internal_vals
+
+
+def test_unilateral_small_hole_with_angle_is_not_axial():
+    features = {
+        "overall": {},
+        "external_contour": [],
+        "internal_system": [],
+        "special_elements": [],
+        "llm_interpretation_rules": [],
+    }
+    classified: set[str] = set()
+    tokens = [_token("Ø12+0,1"), _token("3x120°")]
+    apply_generic_dimension_classification(features, tokens, classified, ["3x120°", "3 отв.Ø12"])
+    types = [item.get("type") for item in features["internal_system"]]
+    assert "main_axial_hole" not in types
+    assert any(item.get("type") in {"angular_or_pattern_hole", "axial_hole_pattern"} for item in features["special_elements"])
+
+
 def test_length_not_added_as_outer_diameter():
     features = {
         "overall": {},

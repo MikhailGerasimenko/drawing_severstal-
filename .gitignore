@@ -58,3 +58,15 @@ htmlcov/
 # Runtime artifacts
 output/
 data/
+
+# Local reference checkouts (not part of dxf-converter service)
+backend-master/
+backend-dev/
+frontend-dev/
+dxf-converter-dev-2/
+чертежи 3/
+db-caacd8256aff7aebae4dbd617200874dccddc411/
+
+# Local reference checkouts (not part of dxf-converter service)
+backend-master/
+frontend-dev/

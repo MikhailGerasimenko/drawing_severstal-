@@ -20,6 +20,16 @@ def test_extract_gdt_ra_values():
 
 
 @pytest.mark.unit
+def test_extract_gdt_symmetry_not_runout_for_0_1():
+    facts, features = extract_gdt(["симметричность относительно базы А", "0,1", "Ø20"])
+    form = [item for item in features if item["type"] == "form_tolerance"]
+    assert form
+    assert form[0]["value"]["kind"] == "symmetry"
+    assert any("Симметрич" in item for item in facts)
+    assert not any("Биение относительно базы А: не более 0,1" in item for item in facts)
+
+
+@pytest.mark.unit
 def test_extract_gdt_from_sample_flange():
     dxf = SAMPLES_DIR / "07-54-105 - сложность 3 Фланец.dxf"
     if not dxf.is_file():

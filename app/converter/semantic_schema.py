@@ -154,6 +154,32 @@ def collect_text_evidence(summary: DxfSummary) -> list[str]:
     return [item for item in evidence if item]
 
 
+def _notes_for_llm(text_evidence: list[str]) -> list[str]:
+    """Приоритет длинных ТТ и нумерованных пунктов, а не первых 50 коротких размеров."""
+    numbered: list[str] = []
+    long_notes: list[str] = []
+    rest: list[str] = []
+    for text in text_evidence:
+        stripped = text.strip()
+        if re.match(r"^(?:п\.?\s*)?\d{1,2}[.)]\s+\S", stripped, re.IGNORECASE):
+            numbered.append(stripped)
+        elif len(stripped) >= 24 and not DIMENSION_TOKEN_RE.fullmatch(stripped):
+            long_notes.append(stripped)
+        else:
+            rest.append(stripped)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for item in numbered + long_notes + rest:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+        if len(ordered) >= 120:
+            break
+    return ordered
+
+
 def _clean_dxf_markup(text: str) -> str:
     value = text.replace("\\P", " ")
     value = re.sub(r"\\S\^?\s*([^;]+);", r"\1", value)
@@ -435,6 +461,37 @@ def _geometry_diameter_summary(summary: DxfSummary) -> dict[str, Any]:
     }
 
 
+def _cluster_numeric_values(values: list[float], *, max_ratio: float = 2.2, max_span: float = 35.0) -> list[float]:
+    """Оставить плотный кластер чисел таблицы исполнений, отсечь чужие Ø/ГОСТ."""
+    unique = sorted(set(values))
+    if len(unique) <= 2:
+        return unique
+    best = unique
+    best_score = -1.0
+    for start in range(len(unique)):
+        for end in range(start + 2, len(unique) + 1):
+            chunk = unique[start:end]
+            span = chunk[-1] - chunk[0]
+            if chunk[-1] > chunk[0] * max_ratio or span > max_span:
+                continue
+            score = len(chunk) - span / 100.0
+            if score > best_score:
+                best = chunk
+                best_score = score
+    return best
+
+
+def _diameter_values_from_evidence(text_evidence: list[str]) -> set[float]:
+    found: set[float] = set()
+    for item in text_evidence:
+        for match in re.finditer(r"[Ø∅]\s*(\d+(?:[,.]\d+)?)", item):
+            try:
+                found.add(round(float(match.group(1).replace(",", ".")), 3))
+            except ValueError:
+                continue
+    return found
+
+
 def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
     has_l_marker = any(item.strip().lower() in {"l", "l-0,05", "l-0.05"} for item in text_evidence)
     has_h_marker = any(
@@ -447,6 +504,7 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
 
     designations: list[str] = []
     length_values: list[float] = []
+    diameter_noise = _diameter_values_from_evidence(text_evidence)
     for item in text_evidence:
         for match in re.finditer(r"\b\d{1,4}(?:-\d+){1,}(?:\.\d+)?\b", item):
             if match.group(0) not in designations:
@@ -455,18 +513,18 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
         if re.fullmatch(r"\d+(?:\.\d+)?", token):
             value = float(token)
             if 3 <= value <= 500 and value not in length_values:
+                if any(abs(value - diam) < 0.05 for diam in diameter_noise):
+                    continue
                 length_values.append(value)
 
     if not length_values:
         return {}
 
-    values = sorted(length_values)
-    # Отсечь шум вроде 3.71 при основных L=10…103.
+    values = _cluster_numeric_values(length_values)
     if len(values) >= 3 and values[-1] >= 20:
         filtered = [value for value in values if value >= max(8.0, values[-1] * 0.05)]
         if filtered:
             values = filtered
-    # Длина заходного конуса 10 мм часто попадает в таблицу L — убрать одиночный мелкий выброс.
     if len(values) >= 3 and values[0] <= 12 and values[1] >= values[0] * 5:
         values = values[1:]
     parameter = "H" if has_h_marker and not has_l_marker else "L"
@@ -486,6 +544,7 @@ def _extract_execution_table(text_evidence: list[str]) -> dict[str, Any]:
         "designations": designations[:40],
         "source": "text_table",
         "confidence": "medium",
+        "note": "Значения параметра таблицы (H/L) по исполнениям; не смешивать с диаметрами.",
     }
 
 
@@ -561,6 +620,52 @@ def _apply_diameter_execution_table(
                 note="Взято из таблицы исполнений d.",
             )
         )
+
+
+def _bind_linear_dimension_entities(
+    features: dict[str, Any],
+    summary: DxfSummary,
+    classified: set[str],
+) -> None:
+    """Линейные DIMENSION с defpoint: длины ступеней и положения, которых нет в тексте."""
+    existing_lengths: set[str] = set()
+    for bucket in ("external_contour", "internal_system", "special_elements"):
+        for fact in features.get(bucket, []):
+            existing_lengths.add(re.sub(r"\s+", "", str(fact.get("value", "")).lower()))
+    overall = str(features.get("overall", {}).get("main_length", "")).lower()
+    existing_lengths.add(re.sub(r"\s+", "", overall))
+
+    added = 0
+    for dim in summary.dimension_entities:
+        measurement = dim.get("measurement")
+        try:
+            mm = float(measurement)
+        except (TypeError, ValueError):
+            continue
+        if mm < 4 or mm > 250:
+            continue
+        rendered = f"{mm:g}" if mm == int(mm) else f"{mm:.2f}".replace(".", ",")
+        key = rendered.lower()
+        if key in existing_lengths:
+            continue
+        has_ext = any(dim.get(name) for name in ("defpoint2", "defpoint3", "defpoint4"))
+        if not has_ext:
+            continue
+        features["external_contour"].append(
+            _fact(
+                "bound_linear_dimension",
+                rendered,
+                label="Линейный размер по выносным линиям",
+                source={"type": "dimension_entity", "raw": str(dim.get("handle") or rendered)},
+                confidence="medium",
+                note="Измерение DIMENSION + extension points; длина ступени или положение отверстия, не габарит.",
+            )
+        )
+        existing_lengths.add(key)
+        classified.add(key)
+        added += 1
+        if added >= 12:
+            break
 
 
 def _build_engineering_features(
@@ -825,26 +930,40 @@ def _build_engineering_features(
         _mark_classified(classified, l_tolerance)
 
     apply_generic_dimension_classification(features, tokens, classified, text_evidence)
+    _bind_linear_dimension_entities(features, summary, classified)
 
     features["gdt"].extend(gdt_features)
     cleanup_external_contour(features)
     finalize_overall_display(features, tokens)
 
+    tt_keywords = (
+        "маркир", "тверд", "твёрд", "hrc", "h14", "it14",
+        "покрыт", "острые кромк", "неконцентр", "не указанн",
+        "термообр", "цемент", "закал", "риски", "кромк",
+    )
+    seen_tt: set[str] = set()
     for text in text_evidence:
         lowered = text.lower()
-        if any(marker in lowered for marker in ("маркир", "тверд", "твёрд", "hrc", "h14", "it14")):
-            features["technical_requirements"].append(
-                _fact(
-                    "technical_requirement",
-                    text,
-                    label="Техническое требование/примечание",
-                    source=_source(text),
-                    confidence="medium",
-                )
+        numbered = bool(re.match(r"^(?:п\.?\s*)?\d{1,2}[.)]\s+\S", text.strip(), re.IGNORECASE))
+        keyword = any(marker in lowered for marker in tt_keywords)
+        if not (numbered or keyword):
+            continue
+        key = re.sub(r"\s+", " ", text.strip()).lower()
+        if key in seen_tt:
+            continue
+        seen_tt.add(key)
+        features["technical_requirements"].append(
+            _fact(
+                "technical_requirement",
+                text,
+                label="Техническое требование/примечание",
+                source=_source(text),
+                confidence="medium" if numbered else "medium",
             )
-            for token in tokens:
-                if token["source"]["raw"] == text:
-                    _mark_classified(classified, token)
+        )
+        for token in tokens:
+            if token["source"]["raw"] == text:
+                _mark_classified(classified, token)
 
     unclassified = [
         token
@@ -886,6 +1005,14 @@ def _build_engineering_features(
         features["llm_interpretation_rules"].append(
             "Каждый размер из critical_unclassified должен попасть в паспорт либо в геометрию, либо в примечания как «требует проверки»."
         )
+    features["llm_interpretation_rules"].extend(
+        [
+            "Не переносить размер с углового отверстия на осевое без выносных линий.",
+            "H-посадка на максимальном Ø чаще наружный контур вставки, не внутренняя система.",
+            "Конус: держи пару Ø, угол и длину как один conical_surface.",
+            "При замечании технолога не сужай контекст: сверяй Explicit Dimension Tokens и Technical Requirements целиком.",
+        ]
+    )
 
     audit = {
         "dimension_texts_total": len(tokens),
@@ -929,11 +1056,45 @@ def _build_validation_gate(
     )
     if not engineering_features.get("internal_system") and internal_fits:
         warnings.append("Не классифицирована внутренняя система/осевое отверстие.")
-    if critical_unclassified and len(critical_unclassified) > 5:
+    if critical_unclassified:
         warnings.append(
             f"Есть критичные нераспознанные размеры: {len(critical_unclassified)}. "
             "Перед генерацией паспорта проверьте critical_unclassified."
         )
+    cone_angles = [
+        fact
+        for bucket in ("external_contour", "internal_system")
+        for fact in engineering_features.get(bucket, [])
+        if fact.get("type") == "cone_angle"
+    ]
+    conical = [
+        fact
+        for bucket in ("external_contour", "internal_system", "special_elements")
+        for fact in engineering_features.get(bucket, [])
+        if fact.get("type") == "conical_surface"
+    ]
+    if cone_angles and not conical:
+        warnings.append("Есть угол конуса без объекта conical_surface (пара Ø и длина не связаны).")
+    roughness = [
+        fact for fact in engineering_features.get("gdt", []) if fact.get("type") == "surface_roughness"
+    ]
+    if roughness:
+        values = roughness[0].get("value")
+        unbound = False
+        if isinstance(values, list):
+            unbound = any(
+                isinstance(item, dict) and item.get("target_hint") in {None, "", "unbound"}
+                for item in values
+            )
+        if unbound:
+            warnings.append("Ra извлечена, но не привязана к поверхности (target_hint=unbound).")
+    length_table = (engineering_features.get("overall") or {}).get("length_table")
+    if length_table and length_table.get("max") and length_table.get("min"):
+        if float(length_table["max"]) / max(float(length_table["min"]), 0.01) > 8:
+            warnings.append("Таблица исполнений H/L выглядит смешанной с диаметрами — проверьте параметр.")
+    tech = engineering_features.get("technical_requirements") or []
+    if not tech:
+        warnings.append("Технические требования не извлечены; сверь пункты ТТ с Source Notes.")
 
     return {
         "status": "fail" if errors else ("warn" if warnings else "pass"),
@@ -944,6 +1105,7 @@ def _build_validation_gate(
             "Не переносить pitch_diameter в central_hole.",
             "Не использовать bounding_box как габарит детали.",
             "Все critical_unclassified должны быть либо классифицированы, либо явно отмечены как требующие проверки.",
+            "Gate проверяет инженерную полноту (конус, Ra→поверхность, ТТ, таблица исполнений), не только наличие полей.",
         ],
     }
 
@@ -952,7 +1114,7 @@ def build_semantic_passport_json(summary: DxfSummary) -> DrawingSemantics:
     text_evidence = collect_text_evidence(summary)
     geometry_facts = [f"{key}: {count}" for key, count in summary.entity_counts.items()]
     gdt_facts, gdt_features = extract_gdt(text_evidence)
-    notes_facts = text_evidence[:50]
+    notes_facts = _notes_for_llm(text_evidence)
     engineering_features, extraction_audit, critical_unclassified, conflicts = _build_engineering_features(
         summary,
         text_evidence,

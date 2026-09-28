@@ -2,7 +2,7 @@ import shutil
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
 from app.api.v1.endpoints.helpers import (
     artifact_url,
@@ -14,9 +14,10 @@ from app.api.v1.endpoints.helpers import (
 from app.api.v1.schemas.convert import ConvertData, ConvertResponse
 from app.converter.workflow import convert_dxf
 from app.core.exceptions import ValidationError
+from app.core.security import verify_internal_token
 from app.core.utils import get_current_timestamp
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_internal_token)])
 
 
 @router.post("/convert", response_model=ConvertResponse)

@@ -89,7 +89,13 @@ def apply_generic_dimension_classification(
     available = [token for token in tokens if token["normalized"].lower() not in classified]
     diameters = [token for token in available if _is_diameter_token(token)]
 
-    unilateral = [token for token in diameters if _has_unilateral_plus(token["normalized"])]
+    unilateral = [
+        token
+        for token in diameters
+        if _has_unilateral_plus(token["normalized"])
+        and not _has_internal_fit(token["normalized"])
+        and not _has_shaft_fit(token["normalized"])
+    ]
     internal = [
         token
         for token in diameters
@@ -106,17 +112,18 @@ def apply_generic_dimension_classification(
         if token not in internal and token not in external and token not in unilateral
     ]
 
-    _classify_unilateral_holes(features, unilateral, classified)
+    _classify_unilateral_holes(features, unilateral, classified, text_evidence)
     _classify_pitch_hole_groups(features, diameters, classified, text_evidence)
     _classify_qty_holes(features, diameters, classified, text_evidence)
     _classify_external_shafts(features, external, classified)
-    _classify_internal_holes(features, internal, classified)
-    _classify_plain_diameters(features, plain, classified)
+    _classify_internal_holes(features, internal, classified, diameters)
+    _classify_plain_diameters(features, plain, classified, text_evidence)
     _classify_letter_parameters(features, available, classified, text_evidence)
     _classify_threads(features, available, classified)
     _classify_lengths(features, available, classified, text_evidence)
     _classify_cone_angles(features, available, classified, text_evidence)
-    _classify_fillets(features, available, classified)
+    _assemble_conical_surface(features, available, classified)
+    _classify_fillets(features, available, classified, text_evidence)
     _classify_chamfers_generic(features, available, classified)
     _classify_window_and_corner_holes(features, available, classified, text_evidence)
 
@@ -127,16 +134,49 @@ def _mark(classified: set[str], *tokens: Optional[dict[str, Any]]) -> None:
             classified.add(token["normalized"].lower())
 
 
+def _has_angular_hole_context(text_evidence: list[str]) -> bool:
+    joined = " ".join(text_evidence)
+    if PITCH_ANGLE_RE.search(joined):
+        return True
+    if HOLE_QTY_RE.search(joined):
+        return True
+    if re.search(r"угл|дел(ит|еж)|окружност", joined, re.IGNORECASE):
+        return True
+    return False
+
+
+def _max_diameter_mm(tokens: list[dict[str, Any]]) -> float:
+    values = [_parse_diameter_mm(token.get("normalized", "")) for token in tokens]
+    return max(values, default=0.0)
+
+
 def _classify_unilateral_holes(
     features: dict[str, Any],
     unilateral: list[dict[str, Any]],
     classified: set[str],
+    text_evidence: list[str],
 ) -> None:
     if not unilateral:
         return
+    angular = _has_angular_hole_context(text_evidence)
     ordered = sorted(unilateral, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
     for index, token in enumerate(ordered[:4]):
         if token["normalized"].lower() in classified:
+            continue
+        diameter = _parse_diameter_mm(token["normalized"])
+        # Ø12 с +0,1 на фоне углового шага — отверстие паттерна, не осевое.
+        if angular and diameter <= 16:
+            features["special_elements"].append(
+                _fact(
+                    "angular_or_pattern_hole",
+                    token["value"],
+                    label="Угловое / периферийное отверстие",
+                    source=token["source"],
+                    confidence="high",
+                    note="Односторонний +допуск при угловом шаге/«N отв.» — не осевое отверстие.",
+                )
+            )
+            _mark(classified, token)
             continue
         label = "Основное осевое отверстие" if index == 0 else "Внутренняя ступень/расточка"
         fact_type = "main_axial_hole" if index == 0 else "counterbore_or_stepped_hole"
@@ -225,7 +265,11 @@ def _classify_pitch_hole_groups(
     classified: set[str],
     text_evidence: list[str],
 ) -> None:
-    hole_tokens = [token for token in diameters if _has_internal_fit(token["normalized"])]
+    hole_tokens = [
+        token
+        for token in diameters
+        if _has_internal_fit(token["normalized"]) and _parse_diameter_mm(token["normalized"]) <= 30
+    ]
     pitch_candidates = [
         token
         for token in diameters
@@ -310,6 +354,7 @@ def _classify_internal_holes(
     features: dict[str, Any],
     internal: list[dict[str, Any]],
     classified: set[str],
+    all_diameters: list[dict[str, Any]],
 ) -> None:
     if not internal:
         return
@@ -318,27 +363,37 @@ def _classify_internal_holes(
         if fact.get("type") == "outer_diameter":
             outer_d = _parse_diameter_mm(str(fact.get("value", "")))
             break
+    global_max = max(outer_d, _max_diameter_mm(all_diameters), _max_diameter_mm(internal))
 
-    # H-посадка на «толстом» диаметре при наличии меньшего отверстия часто наружная ступень (втулки/вставки).
+    # H-посадка на диаметре, близком к максимуму чертежа — наружный контур (вставки/втулки).
     hole_like = [
         token
         for token in internal
-        if _parse_diameter_mm(token["normalized"]) < (outer_d * 0.45 if outer_d else 1e9)
+        if _parse_diameter_mm(token["normalized"]) < (global_max * 0.45 if global_max else 1e9)
     ]
     remaining: list[dict[str, Any]] = []
     for token in internal:
         diameter = _parse_diameter_mm(token["normalized"])
-        if outer_d and hole_like and diameter >= outer_d * 0.55:
+        is_outer_scale = global_max and diameter >= global_max * 0.85
+        is_large_step = bool(outer_d) and diameter >= outer_d * 0.68 and diameter < outer_d * 0.98
+        is_large_vs_holes = bool(hole_like) and outer_d and diameter >= outer_d * 0.55
+        if is_outer_scale or is_large_step or is_large_vs_holes:
+            fact_type = "outer_diameter" if is_outer_scale and not any(
+                item.get("type") == "outer_diameter" for item in features["external_contour"]
+            ) else "external_step_diameter"
+            label = "Основной наружный диаметр" if fact_type == "outer_diameter" else "Наружная ступень (посадка H)"
             features["external_contour"].append(
                 _fact(
-                    "external_step_diameter",
+                    fact_type,
                     token["value"],
-                    label="Наружная ступень (посадка H)",
+                    label=label,
                     source=token["source"],
                     confidence="medium",
-                    note="Крупный Ø с H-посадкой отнесён к наружному контуру при наличии меньшего отверстия; проверь по разрезу.",
+                    note="Крупный Ø с H-посадкой отнесён к наружному контуру; проверь по разрезу.",
                 )
             )
+            if fact_type == "outer_diameter":
+                features["overall"]["max_diameter"] = token["value"]
             _mark(classified, token)
         else:
             remaining.append(token)
@@ -379,6 +434,7 @@ def _classify_plain_diameters(
     features: dict[str, Any],
     plain: list[dict[str, Any]],
     classified: set[str],
+    text_evidence: list[str],
 ) -> None:
     if not plain:
         return
@@ -454,6 +510,19 @@ def _classify_plain_diameters(
             item.get("type") in {"main_axial_hole", "main_axial_hole_candidate"}
             for item in features["internal_system"]
         ):
+            if _has_angular_hole_context(text_evidence) and diameter <= 16:
+                features["special_elements"].append(
+                    _fact(
+                        "angular_or_pattern_hole",
+                        token["value"],
+                        label="Угловое / периферийное отверстие",
+                        source=token["source"],
+                        confidence="medium",
+                        note="Малый Ø при угловом шаге — не осевое отверстие.",
+                    )
+                )
+                _mark(classified, token)
+                continue
             features["internal_system"].append(
                 _fact(
                     "main_axial_hole",
@@ -577,6 +646,22 @@ def _classify_lengths(
                 )
             )
         for token in length_tokens:
+            if token["normalized"].lower() in classified:
+                continue
+            if token is main:
+                _mark(classified, token)
+                continue
+            # Остальные линейные размеры — длины ступеней / положения, не габарит.
+            features["external_contour"].append(
+                _fact(
+                    "step_length_or_position",
+                    token["value"],
+                    label="Длина ступени / осевое положение",
+                    source=token["source"],
+                    confidence="medium",
+                    note="Не габарит: привяжи к ступени или отверстию по выносным линиям.",
+                )
+            )
             _mark(classified, token)
     elif length_tokens:
         for token in length_tokens:
@@ -731,17 +816,85 @@ def _classify_cone_angles(
         _mark(classified, token)
 
 
-def _parse_angle_deg(normalized: str) -> float:
-    match = re.match(r"^(\d+(?:,\d+)?)", normalized.replace(" ", ""))
-    if not match:
-        return 0.0
-    return float(match.group(1).replace(",", "."))
+def _assemble_conical_surface(
+    features: dict[str, Any],
+    available: list[dict[str, Any]],
+    classified: set[str],
+) -> None:
+    """Связать угол конуса, пару Ø и длину в один объект conical_surface."""
+    angle_facts: list[tuple[str, dict[str, Any]]] = []
+    for bucket in ("external_contour", "internal_system"):
+        for fact in features.get(bucket, []):
+            if fact.get("type") == "cone_angle":
+                angle_facts.append((bucket, fact))
+    if not angle_facts:
+        return
+
+    starred = [
+        token
+        for token in available
+        if _is_diameter_token(token) and "*" in token.get("normalized", "")
+    ]
+    plain_near: list[dict[str, Any]] = []
+    for token in available:
+        if not _is_diameter_token(token) or token["normalized"].lower() in classified:
+            continue
+        mm = _parse_diameter_mm(token["normalized"])
+        if 20 <= mm <= 120:
+            plain_near.append(token)
+    length_tokens = [
+        token
+        for token in available
+        if _is_length_token(token.get("normalized", ""))
+        or re.fullmatch(r"\d+(?:[,.]\d+)?", token.get("normalized", "") or "")
+    ]
+    length_pick = None
+    for token in length_tokens:
+        raw = token.get("normalized", "").replace(",", ".")
+        match = re.search(r"(\d+(?:\.\d+)?)", raw)
+        if not match:
+            continue
+        value = float(match.group(1))
+        if 12 <= value <= 80:
+            length_pick = token
+            break
+
+    for bucket, angle_fact in angle_facts[:2]:
+        if any(item.get("type") == "conical_surface" for item in features.get(bucket, [])):
+            continue
+        large = None
+        small = None
+        if len(starred) >= 1:
+            ordered = sorted(starred, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
+            large = ordered[0]
+            small = ordered[1] if len(ordered) > 1 else (plain_near[0] if plain_near else None)
+        elif len(plain_near) >= 2:
+            ordered = sorted(plain_near, key=lambda item: _parse_diameter_mm(item["normalized"]), reverse=True)
+            large, small = ordered[0], ordered[1]
+        payload: dict[str, Any] = {
+            "angle": angle_fact.get("value"),
+            "large_diameter": large["value"] if large else None,
+            "small_diameter": small["value"] if small else None,
+            "length": length_pick["value"] if length_pick else None,
+        }
+        features[bucket].append(
+            _fact(
+                "conical_surface",
+                payload,
+                label="Коническая поверхность",
+                source=angle_fact.get("source") or {"type": "derived", "raw": "cone"},
+                confidence="medium" if large and small else "low",
+                note="Ø большой/малый, угол и длина — один feature, не четыре независимых размера.",
+            )
+        )
+        _mark(classified, large, small, length_pick)
 
 
 def _classify_fillets(
     features: dict[str, Any],
     available: list[dict[str, Any]],
     classified: set[str],
+    text_evidence: list[str],
 ) -> None:
     fillets = [
         token
@@ -755,13 +908,33 @@ def _classify_fillets(
         if fact.get("type") == "outer_diameter":
             outer_d = _parse_diameter_mm(str(fact.get("value", "")))
             break
+    joined = " ".join(text_evidence).lower()
+    groove_context = bool(re.search(r"канав|проточк|\bа\b.*канав|канав.*\bа\b", joined))
+    window_context = any(item.get("type") == "rectangular_window" for item in features.get("internal_system", []))
 
+    groove_tokens: list[dict[str, Any]] = []
     for token in fillets[:6]:
         if token["normalized"].lower() in classified:
             continue
         radius = float(re.sub(r"[^\d,]", "", token["normalized"]).replace(",", ".") or "0")
-        # Мусор размерных блоков: R34/R52 на детали Ø45…80.
         if radius >= 12 and (not outer_d or radius >= outer_d * 0.25):
+            _mark(classified, token)
+            continue
+        if groove_context and radius <= 1.5:
+            groove_tokens.append(token)
+            continue
+        if window_context and radius <= 1.5:
+            # Мелкие R окна не путать с канавкой, но и не вешать на окно без лидера.
+            features["special_elements"].append(
+                _fact(
+                    "fillet_or_blend",
+                    token["value"],
+                    label="Радиус (привязка не подтверждена)",
+                    source=token["source"],
+                    confidence="low",
+                    note="Не относить к окну без выноски; проверь канавку/галтель по лидеру.",
+                )
+            )
             _mark(classified, token)
             continue
         if radius >= 4:
@@ -795,6 +968,26 @@ def _classify_fillets(
                 )
             )
         _mark(classified, token)
+
+    if groove_tokens:
+        features["special_elements"].append(
+            _fact(
+                "groove_fillets",
+                [token["value"] for token in groove_tokens],
+                label="Радиусы канавки",
+                source=groove_tokens[0]["source"],
+                confidence="medium",
+                note="R канавки (часто обозначение А) не относить к окну/пазу.",
+            )
+        )
+        _mark(classified, *groove_tokens)
+
+
+def _parse_angle_deg(normalized: str) -> float:
+    match = re.match(r"^(\d+(?:,\d+)?)", normalized.replace(" ", ""))
+    if not match:
+        return 0.0
+    return float(match.group(1).replace(",", "."))
 
 
 def _classify_chamfers_generic(

@@ -120,6 +120,10 @@ def _dimension_detail(entity: Any, *, source: str) -> dict[str, Any]:
             "dimtype": _json_safe(getattr(entity.dxf, "dimtype", None)),
             "geometry_block": _json_safe(getattr(entity.dxf, "geometry", "")),
             "style": _json_safe(getattr(entity.dxf, "dimstyle", "")),
+            "defpoint": _json_safe(getattr(entity.dxf, "defpoint", None)),
+            "defpoint2": _json_safe(getattr(entity.dxf, "defpoint2", None)),
+            "defpoint3": _json_safe(getattr(entity.dxf, "defpoint3", None)),
+            "defpoint4": _json_safe(getattr(entity.dxf, "defpoint4", None)),
         }
     )
     return detail
