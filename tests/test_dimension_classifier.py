@@ -90,3 +90,37 @@ def test_length_not_added_as_outer_diameter():
         item.get("type") != "outer_diameter" or "60" not in str(item.get("value"))
         for item in features["external_contour"]
     )
+
+
+def test_chamfers_stay_on_external_with_quantity():
+    features = {
+        "overall": {},
+        "external_contour": [],
+        "internal_system": [],
+        "special_elements": [],
+        "llm_interpretation_rules": [],
+    }
+    classified: set[str] = set()
+    tokens = [_token("Ø40"), _token("1,6×45°")]
+    apply_generic_dimension_classification(
+        features, tokens, classified, ["2 фаски 1,6×45°"]
+    )
+    chamfer = next(item for item in features["external_contour"] if item.get("type") == "chamfers")
+    assert chamfer["value"]["quantity"] == 2
+    assert "1,6" in str(chamfer["value"]["sizes"][0])
+    assert not any(item.get("type") == "chamfers" for item in features["special_elements"])
+
+
+def test_large_chamfer_goes_internal():
+    features = {
+        "overall": {},
+        "external_contour": [],
+        "internal_system": [],
+        "special_elements": [],
+        "llm_interpretation_rules": [],
+    }
+    classified: set[str] = set()
+    tokens = [_token("Ø80"), _token("6×45°")]
+    apply_generic_dimension_classification(features, tokens, classified, [])
+    assert any(item.get("type") == "chamfers" for item in features["internal_system"])
+    assert not any(item.get("type") == "chamfers" for item in features["external_contour"])

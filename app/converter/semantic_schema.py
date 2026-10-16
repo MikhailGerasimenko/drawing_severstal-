@@ -987,7 +987,7 @@ def _build_engineering_features(
         "evidence": part_evidence,
     }
     features["llm_interpretation_rules"].append(
-        "Поле part_type / Тип детали берётся из штампа DXF (основная надпись); имя файла — только fallback."
+        "Наименование детали — из штампа (product_name/part_type); класс геометрии (тело вращения/плоская) не подменяет наименование. Имя файла — только fallback."
     )
     if not features["external_contour"]:
         features["llm_interpretation_rules"].append(
@@ -995,11 +995,11 @@ def _build_engineering_features(
         )
     if not features["internal_system"]:
         features["llm_interpretation_rules"].append(
-            "Если Internal System пуст — не пропускай внутренние элементы: ищи отверстия, расточки и фаски в Explicit Dimension Tokens."
+            "Если Internal System пуст — не создавай шаблон отверстия; ищи подтверждённые отверстия/расточки только в Explicit Dimension Tokens."
         )
     if not features["special_elements"] and tokens:
         features["llm_interpretation_rules"].append(
-            "Если Special Elements пуст — вынеси в спецэлементы все подтверждённые размеры из Explicit Dimension Tokens (отверстия, пазы, фаски, радиусы)."
+            "Если Special Elements пуст — вынеси туда только пазы, окна, резьбу вне оси, группы отверстий на делительном Ø; фаски и радиусы скруглений оставляй на контурах."
         )
     if critical_unclassified:
         features["llm_interpretation_rules"].append(
@@ -1010,6 +1010,10 @@ def _build_engineering_features(
             "Не переносить размер с углового отверстия на осевое без выносных линий.",
             "H-посадка на максимальном Ø чаще наружный контур вставки, не внутренняя система.",
             "Конус: держи пару Ø, угол и длину как один conical_surface.",
+            "Фаски привязывай к ступени/Ø; не дублируй перечнем в notes и не выдумывай законную фаску.",
+            "Габариты — номинальные (не предельные по допуску); при таблице исполнений укажи макс. и спроси позицию.",
+            "Technical Requirements копируй целиком по всем пунктам; общую Ra (general_unspecified) — только в notes.",
+            "Геометрические допуски: укажи тип, значение, букву базы и конкретную поверхность; не своди всё к биению.",
             "При замечании технолога не сужай контекст: сверяй Explicit Dimension Tokens и Technical Requirements целиком.",
         ]
     )
@@ -1050,11 +1054,22 @@ def _build_validation_gate(
         warnings.append("Не найдены надежные габариты детали.")
     if not engineering_features.get("external_contour"):
         warnings.append("Не классифицирован наружный контур.")
-    internal_fits = any(
-        re.search(r"H\d+", str(token.get("normalized", "")), re.IGNORECASE)
-        for token in engineering_features.get("explicit_dimensions", [])
-    )
-    if not engineering_features.get("internal_system") and internal_fits:
+    # H на крупном Ø часто наружный контур — warning только при мелких H без внутренней системы.
+    def _token_mm(token: dict[str, Any]) -> float:
+        match = re.search(r"[Ø∅]\s*(\d+(?:[,.]\d+)?)", str(token.get("normalized", "")), re.I)
+        return float(match.group(1).replace(",", ".")) if match else 0.0
+
+    explicit = engineering_features.get("explicit_dimensions", [])
+    h_tokens = [
+        token
+        for token in explicit
+        if re.search(r"H\d+", str(token.get("normalized", "")), re.IGNORECASE)
+    ]
+    max_mm = max((_token_mm(token) for token in explicit), default=0.0)
+    hole_like_h = [
+        token for token in h_tokens if _token_mm(token) < (max_mm * 0.55 if max_mm else 1e9)
+    ]
+    if not engineering_features.get("internal_system") and hole_like_h:
         warnings.append("Не классифицирована внутренняя система/осевое отверстие.")
     if critical_unclassified:
         warnings.append(
@@ -1087,7 +1102,19 @@ def _build_validation_gate(
                 for item in values
             )
         if unbound:
-            warnings.append("Ra извлечена, но не привязана к поверхности (target_hint=unbound).")
+            # general_unspecified — ожидаемая общая Ra, не warning.
+            has_only_general = False
+            if isinstance(values, list):
+                hints = [
+                    item.get("target_hint")
+                    for item in values
+                    if isinstance(item, dict)
+                ]
+                has_only_general = hints and all(
+                    hint in {None, "", "unbound", "general_unspecified"} for hint in hints
+                ) and any(hint == "general_unspecified" for hint in hints)
+            if not has_only_general:
+                warnings.append("Ra извлечена, но не привязана к поверхности (target_hint=unbound).")
     length_table = (engineering_features.get("overall") or {}).get("length_table")
     if length_table and length_table.get("max") and length_table.get("min"):
         if float(length_table["max"]) / max(float(length_table["min"]), 0.01) > 8:

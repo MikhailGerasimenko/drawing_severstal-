@@ -57,6 +57,7 @@ htmlcov/
 
 # Runtime artifacts
 output/
+eval_out/
 data/
 
 # Local reference checkouts (not part of dxf-converter service)

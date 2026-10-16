@@ -58,6 +58,18 @@ def pick_main_length(tokens: list[dict[str, Any]]) -> dict[str, Any] | None:
     )
 
 
+def _nominal_length_label(value: Any) -> str:
+    """Номинал длины для габарита: 100±0,2 → 100; 60-0,5 → 60. Посадки Ø не трогаем."""
+    text = str(value or "").strip()
+    if not text:
+        return text
+    compact = text.replace(" ", "")
+    match = re.match(r"^(\d+(?:[,.]\d+)?)(?:±|[+\-]).*$", compact)
+    if match:
+        return match.group(1)
+    return text
+
+
 def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, Any]]) -> None:
     """Собрать человекочитаемые габариты из классифицированных фактов."""
     overall = features.setdefault("overall", {})
@@ -88,6 +100,10 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
     diameter_table = overall.get("diameter_table")
     parts: list[str] = []
     length_param = (length_table or {}).get("parameter") or "L"
+    # Диаметр с посадкой оставляем как есть; длину в display — номиналом.
+    length_label = _nominal_length_label(main_length) if main_length else None
+    if length_label:
+        overall["main_length_nominal"] = length_label
 
     # Таблица исполнений приоритетнее, если явной габаритной длины нет или она из той же таблицы.
     prefer_table = False
@@ -101,23 +117,30 @@ def finalize_overall_display(features: dict[str, Any], tokens: list[dict[str, An
             or (table_max and main_mm < table_max * 0.5)
         )
 
-    if max_diameter and main_length and not prefer_table:
-        parts.append(f"{max_diameter} × {main_length}")
+    if max_diameter and length_label and not prefer_table:
+        parts.append(f"{max_diameter} × {length_label}")
+        if length_table:
+            overall["execution_note"] = (
+                "При таблице исполнений уточните позицию или оставьте расчёт по максимальному исполнению."
+            )
     elif max_diameter and length_table:
         tol = f" ({length_table['tolerance']})" if length_table.get("tolerance") else ""
         parts.append(
             f"{max_diameter} × {length_param}{tol} "
             f"({length_table['min']:g}...{length_table['max']:g} мм, по исполнениям)"
         )
-    elif main_length and diameter_table:
+        overall["execution_note"] = (
+            "Габарит по таблице исполнений (макс.). Подтвердите позицию или укажите переменное значение."
+        )
+    elif length_label and diameter_table:
         fit = diameter_table.get("fit")
         fit_suffix = f" {fit}" if fit else ""
         values = ", ".join(f"Ø{v:g}{fit_suffix}" for v in diameter_table.get("values", [])[:8])
-        parts.append(f"{main_length}; Ø по исполнениям: {values}")
+        parts.append(f"{length_label}; Ø по исполнениям: {values}")
     elif max_diameter:
         parts.append(str(max_diameter))
-    elif main_length:
-        parts.append(str(main_length))
+    elif length_label:
+        parts.append(str(length_label))
     elif length_table:
         parts.append(
             f"{length_param} {length_table['min']:g}...{length_table['max']:g} мм (по исполнениям)"

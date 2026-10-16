@@ -6,10 +6,15 @@ from typing import Any
 
 RA_RE = re.compile(r"\bRa\s*(\d+(?:[,.]\d+)?)\b", re.IGNORECASE)
 GDT_WORD_RE = re.compile(
-    r"(биени|радиальн|торцев|симметрич|перпенд|параллельн|соосност|плоскост|позици)",
+    r"(биени|радиальн|торцев|симметрич|перпенд|параллельн|соосност|плоскост|позици|"
+    r"круглост|цилиндричн|прямолинейн|профиль)",
     re.IGNORECASE,
 )
-GDT_SYMBOL_RE = re.compile(r"(⌅|∥|⟂|⊥|//|◎|≡)")
+GDT_SYMBOL_RE = re.compile(r"(⌅|∥|⟂|⊥|//|◎|≡|⌀)")
+DATUM_LETTER_RE = re.compile(
+    r"баз[аыеу]?\s*([A-Za-zА-Яа-я])\b|\bбаз(?:а|ы)?\s*[«\"']?([A-Za-zА-Яа-я])",
+    re.IGNORECASE,
+)
 GENERAL_TOLERANCE_RE = re.compile(
     r"\b(?:H|h)\s*14\b|\bIT\s*14(?:\s*/\s*2)?\b",
     re.IGNORECASE,
@@ -172,9 +177,47 @@ def _infer_gdt_kind(text: str) -> str:
         return "coaxiality"
     if "плоскост" in lowered:
         return "flatness"
+    if "круглост" in lowered:
+        return "circularity"
+    if "цилиндричн" in lowered:
+        return "cylindricity"
+    if "прямолинейн" in lowered:
+        return "straightness"
+    if "профиль" in lowered:
+        return "profile"
     if "биени" in lowered or "радиальн" in lowered or "торцев" in lowered:
         return "runout"
     return "unknown"
+
+
+def _infer_datum_letter(text: str) -> str | None:
+    match = DATUM_LETTER_RE.search(text)
+    if not match:
+        return None
+    letter = match.group(1) or match.group(2)
+    if not letter:
+        return None
+    # Кириллические А/В/С в штампах → латиница для стабильного JSON.
+    normalized = letter.upper().translate(str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX"))
+    return normalized
+
+
+def _kind_label(kind: str, datum: str | None) -> str:
+    base = datum or "А"
+    labels = {
+        "symmetry": f"Симметричность относительно базы {base}",
+        "position": f"Позиционный допуск относительно базы {base}",
+        "coaxiality": f"Соосность относительно базы {base}",
+        "perpendicularity": f"Перпендикулярность относительно базы {base}",
+        "parallelism": f"Параллельность относительно базы {base}",
+        "flatness": "Плоскостность",
+        "circularity": "Круглость",
+        "cylindricity": "Цилиндричность",
+        "straightness": "Прямолинейность",
+        "profile": "Профиль поверхности/линии",
+        "runout": f"Биение относительно базы {base}",
+    }
+    return labels.get(kind, f"Геометрический допуск относительно базы {base}")
 
 
 def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any]]]:
@@ -215,6 +258,11 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
             target = f"Ø{diam.group(1)}"
         elif re.search(r"торц|баз", text, re.I):
             target = "face_or_datum"
+        elif re.search(r"неуказан|общ\w*\s+шерох|для\s+остальн", text, re.I):
+            target = "general_unspecified"
+        # Одиночный короткий токен Ra без Ø рядом — типичный общий знак (правый верх).
+        elif len(text.strip()) <= 12 and not diam:
+            target = "general_unspecified"
         ra_targets.append(
             {
                 "parameter": "Ra",
@@ -235,7 +283,10 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
                 label="Шероховатость поверхностей",
                 source=_source(line),
                 confidence="high",
-                note="Каждое Ra храни с target_hint (Ø/торец). Общую Ra (штамп) не копировать на все контуры.",
+                note=(
+                    "Локальные Ra — с target_hint (Ø/торец). "
+                    "general_unspecified — общая неуказанная шероховатость (обычно правый верх), только в notes."
+                ),
             )
         )
 
@@ -250,22 +301,30 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
                 form_tolerances.append((cleaned, text))
                 seen_tol.add(cleaned)
     outer_diams = _collect_outer_diameters_for_runout(text_evidence)
-    descriptive_kinds = {_infer_gdt_kind(text) for text in _collect_descriptive_gdt(text_evidence)}
-    preferred_kind = next((kind for kind in ("symmetry", "position", "coaxiality") if kind in descriptive_kinds), "runout")
-    kind_labels = {
-        "symmetry": "Симметричность относительно базы А",
-        "position": "Позиционный допуск относительно базы А",
-        "coaxiality": "Соосность относительно базы А",
-        "runout": "Биение относительно базы А",
-    }
+    descriptive = _collect_descriptive_gdt(text_evidence)
+    descriptive_kinds = {_infer_gdt_kind(text) for text in descriptive}
+    preferred_kind = next(
+        (
+            kind
+            for kind in ("symmetry", "position", "coaxiality", "perpendicularity", "parallelism")
+            if kind in descriptive_kinds
+        ),
+        "runout",
+    )
+    preferred_datum = next(
+        (letter for text in descriptive if (letter := _infer_datum_letter(text))),
+        "A",
+    )
     for value, source_text in form_tolerances:
         kind = _infer_gdt_kind(source_text)
         if kind == "unknown":
             kind = preferred_kind
+        datum = _infer_datum_letter(source_text) or preferred_datum
+        label = _kind_label(kind, datum)
         related = outer_diams[:3] or [None]
         for target in related:
             surfaces = [target] if target else []
-            line = f"{kind_labels.get(kind, 'Допуск формы')} : не более {value} мм"
+            line = f"{label}: не более {value} мм"
             if target:
                 line += f" (поверхность: {target})"
             add_fact_line(line)
@@ -276,18 +335,15 @@ def extract_gdt(text_evidence: list[str]) -> tuple[list[str], list[dict[str, Any
                         "kind": kind,
                         "tolerance_mm": value,
                         "related_geometry": surfaces,
-                        "base_hint": "A",
-                        "formulation_hint": (
-                            "Симметричность относительно базы А"
-                            if kind == "symmetry"
-                            else "Полное радиальное и/или торцевое биение относительно базы А"
-                        ),
+                        "base_hint": datum,
+                        "formulation_hint": label,
                     },
-                    label=kind_labels.get(kind, "Допуск формы относительно базы А"),
+                    label=label,
                     source=_source(source_text),
                     confidence="medium" if target else "low",
                     note=(
                         "Отдельный факт на каждую поверхность; 0,1 без символа биения не считать биением. "
+                        "Укажи конкретную базовую поверхность (Ø/торец/отверстие), не только букву. "
                         "Не объединяй две поверхности в одно требование."
                     ),
                 )

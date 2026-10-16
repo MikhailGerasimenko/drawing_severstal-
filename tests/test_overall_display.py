@@ -10,6 +10,17 @@ def test_finalize_overall_display_max_diameter_and_length():
     assert features["overall"]["display"] == "∅70e8(-0,060-0,106) × 105"
 
 
+def test_finalize_overall_display_uses_nominal_length():
+    features = {
+        "overall": {"max_diameter": "Ø40", "main_length": "100±0,2"},
+        "external_contour": [],
+    }
+    finalize_overall_display(features, [])
+    assert features["overall"]["display"] == "Ø40 × 100"
+    assert features["overall"]["main_length"] == "100±0,2"
+    assert features["overall"]["main_length_nominal"] == "100"
+
+
 def test_filter_critical_unclassified_skips_ra_and_it():
     tokens = [
         {"normalized": "Ra0,80", "value": "Ra 0,80"},

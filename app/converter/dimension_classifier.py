@@ -124,7 +124,7 @@ def apply_generic_dimension_classification(
     _classify_cone_angles(features, available, classified, text_evidence)
     _assemble_conical_surface(features, available, classified)
     _classify_fillets(features, available, classified, text_evidence)
-    _classify_chamfers_generic(features, available, classified)
+    _classify_chamfers_generic(features, available, classified, text_evidence)
     _classify_window_and_corner_holes(features, available, classified, text_evidence)
 
 
@@ -990,10 +990,22 @@ def _parse_angle_deg(normalized: str) -> float:
     return float(match.group(1).replace(",", "."))
 
 
+def _chamfer_quantity(text_evidence: list[str], chamfer_count: int) -> int | None:
+    """Количество фасок из текста ТТ/надписей; не выдумывать сверх явного."""
+    joined = " ".join(text_evidence)
+    match = re.search(r"(\d+)\s*фаск", joined, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    if chamfer_count >= 2:
+        return chamfer_count
+    return None
+
+
 def _classify_chamfers_generic(
     features: dict[str, Any],
     available: list[dict[str, Any]],
     classified: set[str],
+    text_evidence: list[str] | None = None,
 ) -> None:
     chamfers = [
         token
@@ -1002,24 +1014,41 @@ def _classify_chamfers_generic(
     ]
     if not chamfers:
         return
-    values = [token["value"] for token in chamfers[:8]]
-    # Крупная фаска 6×45° на прижимах/окнах чаще внутренняя.
+    evidence = text_evidence or []
+    joined = " ".join(evidence).lower()
+    # Крупная фаска 6×45° на прижимах/окнах чаще внутренняя; явный «внут» — тоже.
     large_internal = any(
         re.match(r"^[6-9](?:[,.]\d+)?×45", token["normalized"].replace(" ", ""), re.IGNORECASE)
         for token in chamfers
     )
-    target = "internal_system" if large_internal else "external_contour"
-    label = "Фаски внутренней системы" if large_internal else "Фаски наружного контура"
+    text_internal = bool(re.search(r"внутренн\w*\s+фаск|фаск\w*\s+внутрен", joined))
+    text_external = bool(re.search(r"наружн\w*\s+фаск|фаск\w*\s+наруж", joined))
+    if text_internal and not text_external:
+        use_internal = True
+    elif text_external and not text_internal:
+        use_internal = False
+    else:
+        use_internal = large_internal
+
+    values = [token["value"] for token in chamfers[:8]]
+    qty = _chamfer_quantity(evidence, len(values))
+    payload: dict[str, Any] | list[str]
+    if qty:
+        payload = {"sizes": values, "quantity": qty}
+    else:
+        payload = values
+    target = "internal_system" if use_internal else "external_contour"
+    label = "Фаски внутренней системы" if use_internal else "Фаски наружного контура"
     features[target].append(
         _fact(
             "chamfers",
-            values,
+            payload,
             label=label,
             source=chamfers[0]["source"],
             confidence="medium",
             note=(
-                "Укажи количество (часто 2 на торцах) и принадлежность к Ø; "
-                "не выноси в спецэлементы без отдельной группы отверстий/пазов."
+                "Привяжи каждую фаску к ступени/Ø контура; не дублируй отдельным перечнем в notes; "
+                "не выноси в спецэлементы и не выдумывай «законную фаску»."
             ),
         )
     )
